@@ -98,8 +98,6 @@ class MainActivity : FragmentActivity() {
         Engine.send("visible", "on" to true)
         AppLock.onStart()
         applyPrivacy()
-        // Stopped by the system since, it starts again here, where Android allows it.
-        if (Prefs.notify.value && Engine.state.value.saved.any { it.signedIn }) ConnectionService.start(this)
     }
 
     override fun onResume() {

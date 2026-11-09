@@ -6,8 +6,6 @@ import android.app.NotificationManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
@@ -21,7 +19,6 @@ class CirandaApp : Application() {
         const val CHANNEL_VOICE = "voice"
         const val CHANNEL_MESSAGES = "messages"
         const val CHANNEL_UPDATES = "updates"
-        const val CHANNEL_CONNECTION = "connection"
 
         /** Whether an activity of ours is on screen. */
         @Volatile
@@ -48,18 +45,8 @@ class CirandaApp : Application() {
                 }
             }
         }
-        // Mentions with the app closed: the engine listens while the setting is on, and the
-        // connection service keeps it running while there is a server signed in to.
         scope.launch {
-            combine(Prefs.notify, Engine.state) { on, st -> Triple(on, st.version.isNotEmpty(), st.saved.any { it.signedIn }) }
-                .distinctUntilChanged()
-                .collect { (on, known, signedIn) ->
-                    Engine.send("notifications", "on" to on)
-                    when {
-                        !on || (known && !signedIn) -> ConnectionService.stop(this@CirandaApp)
-                        known -> ConnectionService.start(this@CirandaApp)
-                    }
-                }
+            Prefs.notify.collect { on -> Engine.send("notifications", "on" to on) }
         }
         Updater.start(this)
     }
@@ -76,17 +63,6 @@ class CirandaApp : Application() {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_UPDATES, if (pt) "Atualizações" else "Updates", NotificationManager.IMPORTANCE_DEFAULT),
         )
-        nm.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_CONNECTION, if (pt) "Conexão em segundo plano" else "Background connection", NotificationManager.IMPORTANCE_MIN,
-            ).apply {
-                description = if (pt) {
-                    "O aviso fixo que mantém as menções chegando. Pode esconder."
-                } else {
-                    "The steady notice that keeps mentions coming. Safe to hide."
-                }
-                setShowBadge(false)
-            },
-        )
+        nm.deleteNotificationChannel("connection")
     }
 }
