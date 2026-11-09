@@ -93,7 +93,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           v=${{ steps.version.outputs.version }}
-          git log -1 --format=%b "${GITHUB_REF_NAME}" > notes.md
+          # The notes are the body of the version's own commit ("X.Y.Z: summary"), even when fixes
+          # landed on top of it before the tag.
+          git log -1 --format=%b --grep="^$v:" "${GITHUB_REF_NAME}" > notes.md
           [ -s notes.md ] || echo "Ciranda $v para Android." > notes.md
           gh release create "${GITHUB_REF_NAME}" dist/* --title "Ciranda $v para Android" --notes-file notes.md
 
