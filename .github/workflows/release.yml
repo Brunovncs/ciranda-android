@@ -95,7 +95,7 @@ jobs:
           v=${{ steps.version.outputs.version }}
           # The notes are the body of the version's own commit ("X.Y.Z: summary"), even when fixes
           # landed on top of it before the tag.
-          git log -1 --format=%b --grep="^$v:" "${GITHUB_REF_NAME}" > notes.md
+          git log -1 --format=%b --grep="^$v:" "${GITHUB_REF_NAME}" | sed '/^Co-Authored-By:/d' > notes.md
           [ -s notes.md ] || echo "Ciranda $v para Android." > notes.md
           gh release create "${GITHUB_REF_NAME}" dist/* --title "Ciranda $v para Android" --notes-file notes.md
 
