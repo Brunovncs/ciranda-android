@@ -85,6 +85,13 @@ data class AppState(
     val phase: String = "loading",
     val signInError: String? = null,
     val needsServerPassword: Boolean = false,
+    /** The sign-in under way was typed in the form (which stays on screen for it). */
+    val signInViaForm: Boolean = false,
+    /** Failed sign-ins so far, and whether the last was the account's password. */
+    val signInFailures: Long = 0,
+    val wrongPassword: Boolean = false,
+    /** A kept sign-in found no network, and is being tried again. */
+    val signInRetrying: Boolean = false,
     val formServer: String = "",
     val formNickname: String = "",
     val formRegister: Boolean = false,
@@ -164,19 +171,27 @@ sealed interface Event {
     data class Toast(val text: String) : Event
     data class Picture(val hash: String, val path: String?) : Event
     data class NeedsPassword(val channelId: Long, val wrong: Boolean) : Event
-    data class NewMessage(
+    /** A message that calls you, from any server signed in to, for a notification. */
+    data class Mention(
+        val server: String,
+        val username: String,
+        val serverName: String,
         val channelId: Long,
         val channel: String,
-        val server: String,
+        val messageId: Long,
         val author: String,
         val body: String,
-        val mention: Boolean,
-        val viewing: Boolean,
     ) : Event
     data class InCall(val on: Boolean) : Event
     data class File(val path: String, val name: String) : Event
     data class Uploading(val on: Boolean) : Event
+    /** A message or a file's caption that did not go: its text, back for the composer. */
+    data class SendFailed(val channelId: Long, val body: String) : Event
     data class InviteLink(val link: String, val name: String) : Event
+
+    /** Signed in with the form (not a kept sign-in): when the lock is offered. */
+    data object SignedIn : Event
+    data class PasswordChanged(val ok: Boolean, val error: String?) : Event
 }
 
 /** The app's state as the Rust engine last said it, and its one-off events. */
@@ -212,12 +227,15 @@ object Engine {
             "needsPassword" -> _events.tryEmit(Event.NeedsPassword(o.optLong("channelId"), o.optBoolean("wrong")))
             "file" -> _events.tryEmit(Event.File(o.optString("path"), o.optString("name")))
             "call" -> _events.tryEmit(Event.InCall(o.optBoolean("on")))
+            "signedIn" -> _events.tryEmit(Event.SignedIn)
+            "passwordChanged" -> _events.tryEmit(Event.PasswordChanged(o.optBoolean("ok"), o.str("error")))
             "inviteLink" -> _events.tryEmit(Event.InviteLink(o.optString("link"), o.optString("name")))
+            "sendFailed" -> _events.tryEmit(Event.SendFailed(o.optLong("channelId"), o.optString("body")))
             "uploading" -> _events.tryEmit(Event.Uploading(o.optBoolean("on")))
-            "message" -> _events.tryEmit(
-                Event.NewMessage(
-                    o.optLong("channelId"), o.optString("channel"), o.optString("server"), o.optString("author"),
-                    o.optString("body"), o.optBoolean("mention"), o.optBoolean("viewing"),
+            "mention" -> _events.tryEmit(
+                Event.Mention(
+                    o.optString("server"), o.optString("username"), o.optString("serverName"), o.optLong("channelId"),
+                    o.optString("channel"), o.optLong("messageId"), o.optString("author"), o.optString("body"),
                 ),
             )
         }
@@ -255,6 +273,10 @@ private fun parseState(o: JSONObject): AppState {
         phase = o.optString("phase"),
         signInError = signIn.str("error"),
         needsServerPassword = signIn.optBoolean("serverPassword"),
+        signInViaForm = signIn.optBoolean("viaForm"),
+        signInFailures = signIn.optLong("failures"),
+        wrongPassword = signIn.optBoolean("wrongPassword"),
+        signInRetrying = signIn.optBoolean("retrying"),
         formServer = form.optString("server"),
         formNickname = form.optString("nickname"),
         formRegister = form.optBoolean("register"),

@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -40,6 +41,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -52,12 +55,16 @@ import app.ciranda.android.R
 @Composable
 fun SignInScreen(state: AppState) {
     val p = LocalPalette.current
+    // Started from what the engine keeps of the form, so a sign-in that failed while this screen
+    // was away (a kept one, from the list) comes back with everything but the account's password.
     var server by rememberSaveable { mutableStateOf(state.formServer) }
-    var serverPassword by rememberSaveable { mutableStateOf("") }
+    var serverPassword by rememberSaveable { mutableStateOf(state.formServerPassword) }
     var nickname by rememberSaveable { mutableStateOf(state.formNickname) }
     var password by rememberSaveable { mutableStateOf("") }
     var register by rememberSaveable { mutableStateOf(state.formRegister) }
-    var showServerPassword by rememberSaveable { mutableStateOf(false) }
+    var showServerPassword by rememberSaveable { mutableStateOf(state.formServerPassword.isNotEmpty() || state.needsServerPassword) }
+    var forgot by remember { mutableStateOf(false) }
+    val passwordFocus = remember { FocusRequester() }
     // The engine fills the form from a saved server; it takes over until the user types.
     var seeded by remember { mutableStateOf(false) }
     LaunchedEffect(state.formServer, state.formNickname) {
@@ -68,16 +75,29 @@ fun SignInScreen(state: AppState) {
         }
     }
     LaunchedEffect(state.needsServerPassword) { if (state.needsServerPassword) showServerPassword = true }
-    // An invite link fills everything in but the account.
+    // A new invite link fills everything in but the account; one already in the fields is not
+    // filled in again over what was typed since.
+    var seenSeq by rememberSaveable { mutableStateOf(state.formSeq) }
     LaunchedEffect(state.formSeq) {
-        if (state.formSeq > 0) {
+        if (state.formSeq != seenSeq) {
+            seenSeq = state.formSeq
             server = state.formServer
             serverPassword = state.formServerPassword
             showServerPassword = state.formServerPassword.isNotEmpty()
-            nickname = ""
+            nickname = state.formNickname
             password = ""
-            register = true
+            register = state.formRegister
             seeded = true
+        }
+    }
+    // A wrong password empties that field alone, ready for another try.
+    LaunchedEffect(state.signInFailures) {
+        if (state.signInFailures > 0 && state.wrongPassword) {
+            password = ""
+            try {
+                passwordFocus.requestFocus()
+            } catch (_: IllegalStateException) {
+            }
         }
     }
     val busy = state.phase == "signingIn"
@@ -110,7 +130,11 @@ fun SignInScreen(state: AppState) {
                     Text(tr("You were invited to", "Você foi convidado para"), color = p.muted, style = MaterialTheme.typography.bodySmall)
                     Text(place, color = p.text, style = MaterialTheme.typography.titleMedium)
                     Text(
-                        tr("Choose a name and a password to make your account.", "Escolha um nome e uma senha para criar sua conta."),
+                        if (register) {
+                            tr("Choose a name and a password to make your account.", "Escolha um nome e uma senha para criar sua conta.")
+                        } else {
+                            tr("Sign in with your account there.", "Entre com a sua conta de lá.")
+                        },
                         color = p.muted, style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -176,7 +200,7 @@ fun SignInScreen(state: AppState) {
             )
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
-                password, { password = it }, Modifier.fillMaxWidth(),
+                password, { password = it }, Modifier.fillMaxWidth().focusRequester(passwordFocus),
                 label = { Text(tr("Password", "Senha")) },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
@@ -193,6 +217,11 @@ fun SignInScreen(state: AppState) {
                 }
                 Switch(register, { register = it })
             }
+            if (!register) {
+                TextButton({ forgot = true }, Modifier.fillMaxWidth()) {
+                    Text(tr("Forgot your password?", "Esqueceu a senha?"))
+                }
+            }
             state.signInError?.let {
                 Text(it, color = p.danger, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp))
             }
@@ -207,5 +236,21 @@ fun SignInScreen(state: AppState) {
             Spacer(Modifier.height(24.dp))
             Text("v${state.version}", color = p.muted, style = MaterialTheme.typography.labelSmall)
         }
+    }
+    if (forgot) {
+        val place = state.formInvite ?: server.ifBlank { tr("the server", "o servidor") }
+        AlertDialog(
+            onDismissRequest = { forgot = false },
+            confirmButton = { TextButton({ forgot = false }) { Text("OK") } },
+            title = { Text(tr("Forgot your password?", "Esqueceu a senha?")) },
+            text = {
+                Text(
+                    tr(
+                        "A server has no e-mail to send a new one to: whoever runs $place sets a new password for your account in its panel. Ask them, then sign in with it. Still signed in on another device? Change it there, in Settings.",
+                        "O servidor não tem e-mail para mandar uma nova: quem cuida de $place define uma senha nova para a sua conta no painel. Peça para essa pessoa e entre com ela. Ainda está conectado em outro aparelho? Dá para trocar a senha lá, em Configurações.",
+                    ),
+                )
+            },
+        )
     }
 }

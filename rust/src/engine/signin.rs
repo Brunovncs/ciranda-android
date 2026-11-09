@@ -32,16 +32,22 @@ pub struct Failure {
     pub expired: bool,
     /// The server has a password of its own and it was missing or wrong.
     pub server_password: bool,
+    /// The account's password was wrong: only that is typed again.
+    pub wrong_password: bool,
+    /// The server could not be reached at all (no network, or it is down): a kept sign-in is
+    /// tried again rather than given up on.
+    pub offline: bool,
 }
 
 impl From<ApiError> for Failure {
     fn from(e: ApiError) -> Self {
-        Failure { message: e.message, expired: false, server_password: false }
+        let wrong_password = e.code == ErrorCode::BadCredentials;
+        Failure { message: e.message, expired: false, server_password: false, wrong_password, offline: e.status == 0 }
     }
 }
 
 fn fail(message: impl Into<String>) -> Failure {
-    Failure { message: message.into(), expired: false, server_password: false }
+    Failure { message: message.into(), expired: false, server_password: false, wrong_password: false, offline: false }
 }
 
 pub async fn sign_in(api: &Api, form: &Form) -> Result<Done, Failure> {
@@ -90,6 +96,8 @@ pub async fn sign_in(api: &Api, form: &Form) -> Result<Done, Failure> {
                         ),
                         expired: true,
                         server_password: false,
+                        wrong_password: false,
+                        offline: false,
                     });
                 }
             }

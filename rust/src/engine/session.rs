@@ -63,7 +63,8 @@ fn next_generation() -> u64 {
 }
 
 impl ChatLog {
-    fn new() -> ChatLog {
+    /// Not `Default`: each log's pages carry a generation of their own.
+    fn fresh() -> ChatLog {
         ChatLog { generation: next_generation(), ..Default::default() }
     }
 
@@ -207,6 +208,8 @@ pub struct Session {
     pub mentioned: HashMap<ChannelId, u32>,
     /// The channel last open on this server, opened once the channels arrive.
     pub last_channel: Option<ChannelId>,
+    /// Its socket put down while the app is away (`Session::park`).
+    pub parked: bool,
 }
 
 impl Session {
@@ -238,6 +241,7 @@ impl Session {
             unread: HashSet::new(),
             mentioned: HashMap::new(),
             last_channel: None,
+            parked: false,
         };
         s.connect(handle);
         s.refresh_lists(handle);
@@ -259,6 +263,21 @@ impl Session {
             old.stop();
         }
         self.link = Link::Reconnecting;
+    }
+
+    /// Away long enough: the socket goes, and with it being online here. The rest is kept for
+    /// coming back, when `unpark` reconnects and catches up as after any reconnect.
+    pub fn park(&mut self) {
+        log::info!("away: {} put down", self.api.base());
+        self.stop();
+        self.parked = true;
+        self.link = Link::Reconnecting;
+    }
+
+    pub fn unpark(&mut self, handle: &Handle) {
+        log::info!("back: {} reconnects", self.api.base());
+        self.parked = false;
+        self.connect(handle);
     }
 
     pub fn stop(&mut self) {
@@ -406,14 +425,14 @@ impl Session {
             let gone: Vec<ChannelId> = self.recent.drain(..self.recent.len() - KEEP_LOGS).collect();
             self.chats.retain(|c, _| !gone.contains(c));
         }
-        let log = self.chats.entry(id).or_insert_with(ChatLog::new);
+        let log = self.chats.entry(id).or_insert_with(ChatLog::fresh);
         if (!log.loaded || log.stale) && !log.fetching {
             self.fetch_latest(id, handle);
         }
     }
 
     fn fetch_latest(&mut self, id: ChannelId, handle: &Handle) {
-        let log = self.chats.entry(id).or_insert_with(ChatLog::new);
+        let log = self.chats.entry(id).or_insert_with(ChatLog::fresh);
         log.fetching = true;
         log.stale = false;
         let api = self.api.clone();
@@ -449,6 +468,18 @@ impl Session {
                 e.mark_chat();
             });
         });
+    }
+
+    /// The open chat, when a catch-up failed: tried again (from the engine's tick) until it lands,
+    /// as pushes are dropped from a log that may have a gap.
+    pub fn retry_stale(&mut self, handle: &Handle) {
+        if self.parked || self.link != Link::Up {
+            return;
+        }
+        let Some(id) = self.open_channel else { return };
+        if self.chats.get(&id).is_some_and(|l| l.stale && !l.fetching) {
+            self.fetch_latest(id, handle);
+        }
     }
 
     /// After a reconnect: the open chat catches up now, the others when opened.
@@ -489,13 +520,19 @@ impl Session {
         if body.is_empty() {
             return;
         }
-        self.call(
-            handle,
-            move |api| async move { api.send_message(channel, &body, None, reply_to).await },
-            |e, m: Message| {
-                e.added(m);
-            },
-        );
+        let api = self.api.clone();
+        let h = handle.clone();
+        crate::core::runtime().spawn(async move {
+            let got = api.send_message(channel, &body, None, reply_to).await;
+            h.update(move |e| match got {
+                Ok(m) => e.added(m),
+                Err(err) => {
+                    // The text goes back in the box it was sent from, rather than being lost.
+                    e.toast(err.message);
+                    e.send(json!({ "type": "sendFailed", "channelId": channel, "body": body }));
+                }
+            });
+        });
     }
 
     /// A file from the phone, copied to `path` by the interface, sent with `body`.
@@ -504,9 +541,10 @@ impl Session {
         let mime = if mime.is_empty() { "application/octet-stream".to_string() } else { mime };
         let h = handle.clone();
         h.update(|e| e.send(json!({ "type": "uploading", "on": true })));
-        self.call(
-            handle,
-            move |api| async move {
+        let api = self.api.clone();
+        crate::core::runtime().spawn(async move {
+            let caption = body.clone();
+            let got = async {
                 let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 let source = crate::core::upload::Source::Disk(path.clone());
                 let progress = Arc::new(crate::core::upload::Progress::default());
@@ -514,12 +552,22 @@ impl Session {
                 let _ = std::fs::remove_file(&path);
                 let up = up?;
                 api.send_message(channel, body.trim(), Some((&up.hash, &name)), None).await
-            },
-            |e, m: Message| {
+            }
+            .await;
+            // Done either way: the composer is let go of whatever happened.
+            h.update(move |e| {
                 e.send(json!({ "type": "uploading", "on": false }));
-                e.added(m);
-            },
-        );
+                match got {
+                    Ok(m) => e.added(m),
+                    Err(err) => {
+                        e.toast(err.message);
+                        if !caption.trim().is_empty() {
+                            e.send(json!({ "type": "sendFailed", "channelId": channel, "body": caption }));
+                        }
+                    }
+                }
+            });
+        });
     }
 
     pub fn react(&self, id: MessageId, emoji: String, on: bool, handle: &Handle) {
@@ -730,21 +778,19 @@ impl Engine {
                     if for_me && !mine && away {
                         *s.mentioned.entry(m.channel_id).or_default() += 1;
                     }
-                    if !mine {
+                    // On screen, the channel's badge says it; away, a notification.
+                    if for_me && !mine && !self.visible && self.notify {
                         let channel = s.channel(m.channel_id).map(|c| c.name.clone()).unwrap_or_default();
                         let author = s.display_name(m.user_id, m.nickname.as_deref());
-                        let body = if m.body.is_empty() { m.attachment_name.clone().unwrap_or_default() } else { m.body.clone() };
-                        let note = json!({
-                            "type": "message",
-                            "channelId": m.channel_id,
-                            "channel": channel,
-                            "server": s.server_name,
-                            "author": author,
-                            "body": body,
-                            "mention": for_me,
-                            "viewing": !away,
+                        let (url, username, server) = (s.api.base(), s.me.nickname.clone(), s.server_name.clone());
+                        self.notify_mention(super::watch::Mention {
+                            url: &url,
+                            username: &username,
+                            server: &server,
+                            channel: &channel,
+                            author: &author,
+                            message: &m,
                         });
-                        self.send(note);
                     }
                     let id = m.channel_id;
                     if let Some(log) = self.session.as_mut().and_then(|s| s.chats.get_mut(&id)) {
@@ -822,7 +868,11 @@ impl Engine {
                 match to {
                     Some(id) => {
                         let (muted, deafened) = self.call.as_ref().map(|c| (c.muted, c.deafened)).unwrap_or_default();
-                        self.leave();
+                        // Still in a call, only another channel: the interface keeps its service
+                        // (which could not be started again from the background).
+                        if let Some(mut c) = self.call.take() {
+                            c.hang_up(self.session.as_ref());
+                        }
                         self.join_as(id, None, muted, deafened);
                     }
                     None => self.leave(),

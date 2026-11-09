@@ -1,6 +1,10 @@
 package app.ciranda.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -86,8 +90,8 @@ fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
     val chat by Engine.chat.collectAsState()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var showVoice by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(false) }
+    var showVoice by rememberSaveable { mutableStateOf(false) }
+    var showSettings by rememberSaveable { mutableStateOf(false) }
     var askPassword by remember { mutableStateOf<Pair<Long, Boolean>?>(null) }
 
     LaunchedEffect(Unit) {
@@ -95,14 +99,16 @@ fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
             if (e is Event.NeedsPassword) askPassword = e.channelId to e.wrong
         }
     }
+    // A channel on screen has nothing left to tell in a notification.
+    val resumed by activity.resumes.collectAsState()
+    LaunchedEffect(s.url, s.me.nickname, s.openChannel, resumed) {
+        s.openChannel?.let { app.ciranda.android.Notifier.seen(activity, s.url, s.me.nickname, it) }
+    }
     val intent by activity.pending.collectAsState()
     LaunchedEffect(intent) {
         val i = intent ?: return@LaunchedEffect
-        val ch = i.getLongExtra("channelId", -1)
-        if (ch >= 0) {
-            Engine.send("open", "channelId" to ch)
-            drawer.close()
-        }
+        // The engine opens the channel (`MainActivity.takeMention`); the chat shows it.
+        if (i.action == app.ciranda.android.Notifier.OPEN) drawer.close()
         if (i.getBooleanExtra("update", false)) showSettings = true
         activity.pending.value = null
     }
@@ -150,6 +156,9 @@ fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
                 if (channel != null && c != null && c.channelId == channel.id) {
                     ChatView(activity, s, c)
                 } else if (channel != null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                } else if (s.channels.isEmpty()) {
+                    // Nothing has arrived from the server yet: it is on its way, not empty.
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 } else {
                     Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
@@ -204,7 +213,7 @@ fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
 private fun TopBar(title: String, subtitle: String?, onMenu: () -> Unit, onPeople: (() -> Unit)?) {
     val p = LocalPalette.current
     Row(
-        Modifier.fillMaxWidth().background(p.surface).statusBarsPadding().height(56.dp).padding(horizontal = 4.dp),
+        Modifier.fillMaxWidth().background(p.surface).statusBarsPadding().heightIn(min = 56.dp).padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onMenu) { Icon(Icons.Filled.Menu, tr("Channels", "Canais"), tint = p.text) }
@@ -354,7 +363,7 @@ private fun VoiceChannelRow(c: Channel, s: SessionState, voice: VoiceState?, onV
         }
         for (m in roster) {
             val u = s.user(m.userId)
-            val speaking = here && voice != null && m.userId in voice.speaking
+            val speaking = here && m.userId in voice.speaking
             Row(Modifier.fillMaxWidth().padding(start = 44.dp, end = 12.dp, top = 3.dp, bottom = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                 Avatar(u?.name ?: m.nickname, u?.avatarHash, size = 24.dp, speaking = speaking)
                 Spacer(Modifier.width(8.dp))
@@ -417,7 +426,8 @@ private fun VoiceBar(v: VoiceState, s: SessionState, onOpen: () -> Unit) {
 private fun VoiceSheet(v: VoiceState, s: SessionState) {
     val p = LocalPalette.current
     val roster = s.rosters[v.channelId].orEmpty()
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
+    // Scrolls: in landscape, or with many people, the controls at the bottom stay reachable.
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
         Text(v.channel ?: "", style = MaterialTheme.typography.titleLarge, color = p.text)
         Text(
             when (roster.size) {

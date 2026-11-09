@@ -8,6 +8,7 @@ mod call;
 mod render;
 pub mod session;
 mod signin;
+mod watch;
 
 use crate::core::api::Api;
 use crate::core::cache::Cache;
@@ -24,6 +25,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 pub type Job = Box<dyn FnOnce(&mut Engine) + Send>;
+
+/// How long the app may be away before the server on screen stops seeing you online: its socket
+/// is put down, and a background one listens for mentions instead.
+const PARK_AFTER: Duration = Duration::from_secs(60);
 
 /// How async work gets back to the engine.
 #[derive(Clone)]
@@ -108,6 +113,15 @@ pub struct Engine {
     sign_in_form: Value,
     /// Bumped by every sign-in and sign-out: an answer for an older one is dropped.
     sign_in_generation: u64,
+    /// The sign-in under way came from the form (not a kept sign-in), which stays on screen.
+    sign_in_via_form: bool,
+    /// Failed sign-ins so far, so the form knows a new failure from the last; and whether the
+    /// last was the account's password, the one field it then empties.
+    sign_in_failures: u64,
+    wrong_password: bool,
+    /// A kept sign-in that found no network: tried again at this time; and how many times so far.
+    retry: Option<(Instant, signin::Form)>,
+    retry_tries: u32,
     /// Invites opened, so the form knows a new one from the last.
     invites: u64,
     pub session: Option<Session>,
@@ -116,6 +130,11 @@ pub struct Engine {
     ticks: u64,
     /// Whether the interface is on screen; nothing of the chat is sent while it is not.
     visible: bool,
+    /// Since when it has not been.
+    away_since: Option<Instant>,
+    /// Whether mentions become notifications: the interface's setting.
+    notify: bool,
+    watching: watch::Watching,
 }
 
 impl Engine {
@@ -132,12 +151,22 @@ impl Engine {
             needs_server_password: false,
             sign_in_form: Value::Null,
             sign_in_generation: 0,
+            sign_in_via_form: false,
+            sign_in_failures: 0,
+            wrong_password: false,
+            retry: None,
+            retry_tries: 0,
             invites: 0,
             session: None,
             call: None,
             dirty: Dirty::default(),
             ticks: 0,
-            visible: true,
+            // Until the interface says otherwise: started for a notification, or at boot, there
+            // is none.
+            visible: false,
+            away_since: Some(Instant::now()),
+            notify: false,
+            watching: watch::Watching::default(),
         };
         e.apply_audio_prefs();
         e
@@ -185,10 +214,11 @@ impl Engine {
             let voice = self.call.as_ref().map(|c| c.state(self.session.as_ref())).unwrap_or(Value::Null);
             self.send(json!({ "type": "voice", "voice": voice }));
         }
-        if std::mem::take(&mut self.dirty.chat) && self.visible {
-            if let Some(chat) = self.session.as_ref().and_then(|s| s.chat_state()) {
-                self.send(chat);
-            }
+        if std::mem::take(&mut self.dirty.chat)
+            && self.visible
+            && let Some(chat) = self.session.as_ref().and_then(|s| s.chat_state())
+        {
+            self.send(chat);
         }
     }
 
@@ -229,6 +259,10 @@ impl Engine {
             "signIn": {
                 "error": self.sign_in_error,
                 "serverPassword": self.needs_server_password,
+                "viaForm": self.sign_in_via_form,
+                "failures": self.sign_in_failures,
+                "wrongPassword": self.wrong_password,
+                "retrying": self.retry.is_some(),
                 "form": self.sign_in_form,
                 "saved": saved,
             },
@@ -257,6 +291,27 @@ impl Engine {
                 self.dirty.voice = true;
             }
         }
+        if n.is_multiple_of(10) {
+            if self.retry.as_ref().is_some_and(|(at, _)| Instant::now() >= *at)
+                && let Some((_, form)) = self.retry.take()
+            {
+                self.begin_sign_in(form);
+            }
+            if n.is_multiple_of(50)
+                && let Some(s) = self.session.as_mut()
+            {
+                s.retry_stale(&self.handle);
+            }
+            let away = self.away_since.is_some_and(|t| t.elapsed() >= PARK_AFTER);
+            if away
+                && self.call.is_none()
+                && let Some(s) = self.session.as_mut().filter(|s| !s.parked)
+            {
+                s.park();
+                self.mark();
+            }
+            self.sync_watch();
+        }
         if n.is_multiple_of(20) {
             let cache = self.cache.clone();
             crate::core::runtime().spawn_blocking(move || cache.flush());
@@ -280,15 +335,41 @@ impl Engine {
             }
             "visible" => {
                 self.visible = flag("on");
+                self.away_since = if self.visible { None } else { Some(Instant::now()) };
                 if self.visible {
+                    if let Some(s) = self.session.as_mut().filter(|s| s.parked) {
+                        s.unpark(&self.handle);
+                        self.mark();
+                    }
+                    // The channel on screen again: what was counted on it while away is seen.
+                    if let Some(s) = self.session.as_mut()
+                        && let Some(id) = s.open_channel
+                    {
+                        s.viewing = Some(id);
+                        s.mentioned.remove(&id);
+                        s.unread.remove(&id);
+                        self.mark();
+                    }
+                    self.sync_watch();
                     self.mark_chat();
                 }
             }
+            "notifications" => {
+                self.notify = flag("on");
+                self.sync_watch();
+            }
+            "openAt" => self.open_at(&text("server"), &text("username"), int("channelId")),
             "signIn" => self.sign_in(&cmd),
             "invite" => self.open_invite(&text("link")),
             "shareInvite" => self.share_invite(),
             "resume" => self.resume(cmd.get("url").and_then(Value::as_str), cmd.get("username").and_then(Value::as_str)),
             "signOut" => self.sign_out(flag("forget")),
+            "switch" => self.switch_server(),
+            "retryNow" => {
+                if let Some(r) = self.retry.as_mut() {
+                    r.0 = Instant::now();
+                }
+            }
             "open" => {
                 if let (Some(id), Some(s)) = (int("channelId"), self.session.as_mut()) {
                     s.open(id, &self.handle);
@@ -381,6 +462,7 @@ impl Engine {
                 self.mark_voice();
             }
             "settings" => self.change_settings(&cmd),
+            "changePassword" => self.change_password(text("current"), text("password")),
             other => log::warn!("unknown command {other:?}"),
         }
     }
@@ -453,7 +535,23 @@ impl Engine {
             register: cmd.get("register").and_then(Value::as_bool).unwrap_or(false),
             token: None,
         };
-        self.sign_in_form = json!({ "server": form.server, "nickname": form.nickname, "register": form.register });
+        // Everything typed stays for another try but the account's password; an invite stays with
+        // its server.
+        let before = std::mem::take(&mut self.sign_in_form);
+        let mut kept = json!({
+            "server": form.server,
+            "serverPassword": form.server_password,
+            "nickname": form.nickname,
+            "register": form.register,
+        });
+        if before.get("server").and_then(Value::as_str).is_some_and(|s| same_server(&base_for(s), &base_for(&form.server))) {
+            for k in ["invite", "seq"] {
+                if let Some(v) = before.get(k) {
+                    kept[k] = v.clone();
+                }
+            }
+        }
+        self.sign_in_form = kept;
         self.begin_sign_in(form);
     }
 
@@ -477,6 +575,8 @@ impl Engine {
             return;
         }
         // Whatever sign-in was on its way (the last server, at start) gives way to the invite.
+        self.retry = None;
+        self.retry_tries = 0;
         self.sign_in_generation += 1;
         self.end_session();
         self.invites += 1;
@@ -503,8 +603,31 @@ impl Engine {
         self.send(json!({ "type": "inviteLink", "link": link, "name": s.server_name }));
     }
 
+    /// Where a notification leads: a channel on a server, signed in to first if it is not the one
+    /// on screen.
+    fn open_at(&mut self, url: &str, username: &str, channel: Option<ChannelId>) {
+        let here = self.session.as_ref().is_some_and(|s| same_server(&s.api.base(), url) && s.me.nickname.eq_ignore_ascii_case(username));
+        if here {
+            if let Some(id) = channel {
+                self.command(json!({ "cmd": "open", "channelId": id }));
+            }
+            return;
+        }
+        let Some(saved) =
+            self.store.values.saved_servers.iter().find(|s| same_server(&s.url, url) && s.username.eq_ignore_ascii_case(username)).cloned()
+        else {
+            return;
+        };
+        if let Some(id) = channel {
+            self.store.values.set_last_channel(&saved.url, id);
+            self.store.save();
+        }
+        self.resume(Some(&saved.url), Some(&saved.username));
+    }
+
     /// A saved server: the one asked for, or the last one used.
     fn resume(&mut self, url: Option<&str>, username: Option<&str>) {
+        self.retry_tries = 0;
         let v = &self.store.values;
         let saved = match (url, username) {
             (Some(u), Some(n)) => v.saved_server_as(u, n).cloned(),
@@ -534,11 +657,13 @@ impl Engine {
     }
 
     fn begin_sign_in(&mut self, form: signin::Form) {
+        self.retry = None;
         self.end_session();
         self.sign_in_generation += 1;
         let generation = self.sign_in_generation;
         self.phase = Phase::SigningIn;
         self.sign_in_error = None;
+        self.sign_in_via_form = form.token.is_none();
         self.mark();
         let api = Api::new();
         let base = base_for(&form.server);
@@ -567,18 +692,43 @@ impl Engine {
                         e.toast(*note);
                     }
                     let last = e.store.values.last_channel(&api.base());
+                    // What was typed is done with: the door password and an invite too.
+                    e.sign_in_form = json!({ "server": saved_host(&api.base()), "nickname": done.user.nickname, "register": false });
+                    e.wrong_password = false;
+                    if e.sign_in_via_form {
+                        e.send(json!({ "type": "signedIn" }));
+                    }
                     let mut s = Session::new(api, done, &e.handle);
                     s.last_channel = last;
+                    // Started with nothing on screen (at boot, for the notifications): not online
+                    // there until the app is opened.
+                    if !e.visible && e.call.is_none() {
+                        s.park();
+                    }
                     e.session = Some(s);
+                    e.retry_tries = 0;
                     e.phase = Phase::In;
                 }
                 Err(f) => {
+                    // No network for a kept sign-in: not a reason to drop it. It is tried again
+                    // after a while, longer each time, the connecting screen saying so.
+                    if f.offline && form.token.is_some() {
+                        let wait = Duration::from_secs((5u64 << e.retry_tries.min(4)).min(60));
+                        e.retry_tries += 1;
+                        e.retry = Some((Instant::now() + wait, form.clone()));
+                        e.sign_in_error = Some(f.message);
+                        e.mark();
+                        return;
+                    }
+                    e.retry_tries = 0;
                     if f.expired {
                         e.store.values.forget_token(&api.base(), &form.nickname);
                         e.store.save();
                     }
                     e.sign_in_error = Some(f.message);
                     e.needs_server_password = f.server_password;
+                    e.sign_in_failures += 1;
+                    e.wrong_password = f.wrong_password;
                     e.phase = Phase::SignedOut;
                 }
             }
@@ -586,8 +736,44 @@ impl Engine {
         });
     }
 
+    /// Back to the list of servers, still signed in to this one: it goes on telling of mentions,
+    /// and is one tap away.
+    fn switch_server(&mut self) {
+        self.retry = None;
+        self.retry_tries = 0;
+        self.sign_in_generation += 1;
+        self.end_session();
+        self.sign_in_error = None;
+        self.phase = Phase::SignedOut;
+        self.mark();
+    }
+
+    /// A new password for the account on screen. The server signs every other device out and
+    /// hands this one a new sign-in, kept in place of the old.
+    fn change_password(&mut self, current: String, password: String) {
+        let Some(s) = self.session.as_ref() else { return };
+        let api = s.api.clone();
+        let (url, name) = (s.api.base(), s.me.nickname.clone());
+        self.spawn(async move { api.change_password(&current, &password).await }, move |e, got| match got {
+            Ok(token) => {
+                if let Some(s) = e.session.as_ref().filter(|s| same_server(&s.api.base(), &url)) {
+                    s.api.set_token(&token);
+                }
+                if let Some(mut saved) = e.store.values.saved_server_as(&url, &name).cloned() {
+                    saved.session_token = token;
+                    e.store.values.remember_server(saved);
+                    e.store.save();
+                }
+                e.send(json!({ "type": "passwordChanged", "ok": true }));
+            }
+            Err(err) => e.send(json!({ "type": "passwordChanged", "ok": false, "error": err.message })),
+        });
+    }
+
     /// Leaves the server: the call, the socket, and with `forget` the saved sign-in too.
     fn sign_out(&mut self, forget: bool) {
+        self.retry = None;
+        self.retry_tries = 0;
         if let Some(s) = self.session.as_ref() {
             let (url, name) = (s.api.base(), s.me.nickname.clone());
             if forget {
@@ -665,6 +851,11 @@ impl Engine {
         let v = &self.store.values;
         v.voice_sounds.then_some(v.sound_volume as f32 / 100.)
     }
+}
+
+/// An address as the form shows it: without the scheme HTTPS goes without saying.
+fn saved_host(base: &str) -> String {
+    base.strip_prefix("https://").unwrap_or(base).to_string()
 }
 
 /// The address typed, with its scheme. Without one, a server on the internet is reached over

@@ -3,14 +3,11 @@ package app.ciranda.android
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
-import android.content.Intent
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
@@ -24,6 +21,7 @@ class CirandaApp : Application() {
         const val CHANNEL_VOICE = "voice"
         const val CHANNEL_MESSAGES = "messages"
         const val CHANNEL_UPDATES = "updates"
+        const val CHANNEL_CONNECTION = "connection"
 
         /** Whether an activity of ours is on screen. */
         @Volatile
@@ -33,6 +31,8 @@ class CirandaApp : Application() {
     override fun onCreate() {
         super.onCreate()
         app = this
+        Prefs.init(this)
+        AppLock.onAppStart()
         channels()
         val data = File(filesDir, "ciranda").apply { mkdirs() }
         Native.start(this, data.path, cacheDir.path)
@@ -42,18 +42,26 @@ class CirandaApp : Application() {
             Engine.events.collect { e ->
                 when (e) {
                     is Event.Picture -> Pictures.onEvent(e)
-                    is Event.InCall -> voiceService(e.on)
-                    is Event.NewMessage -> notify(e)
+                    is Event.InCall -> if (e.on) VoiceService.start(this@CirandaApp)
+                    is Event.Mention -> Notifier.show(this@CirandaApp, e)
                     else -> {}
                 }
             }
         }
+        // Mentions with the app closed: the engine listens while the setting is on, and the
+        // connection service keeps it running while there is a server signed in to.
+        scope.launch {
+            combine(Prefs.notify, Engine.state) { on, st -> Triple(on, st.version.isNotEmpty(), st.saved.any { it.signedIn }) }
+                .distinctUntilChanged()
+                .collect { (on, known, signedIn) ->
+                    Engine.send("notifications", "on" to on)
+                    when {
+                        !on || (known && !signedIn) -> ConnectionService.stop(this@CirandaApp)
+                        known -> ConnectionService.start(this@CirandaApp)
+                    }
+                }
+        }
         Updater.start(this)
-    }
-
-    private fun voiceService(on: Boolean) {
-        val i = Intent(this, VoiceService::class.java)
-        if (on) ContextCompat.startForegroundService(this, i) else stopService(i)
     }
 
     private fun channels() {
@@ -68,29 +76,17 @@ class CirandaApp : Application() {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_UPDATES, if (pt) "Atualizações" else "Updates", NotificationManager.IMPORTANCE_DEFAULT),
         )
-    }
-
-    /** A mention while Ciranda is not on screen. */
-    private fun notify(e: Event.NewMessage) {
-        if (!e.mention || visible) return
-        if (!NotificationManagerCompat.from(this).areNotificationsEnabled()) return
-        val open = PendingIntent.getActivity(
-            this, e.channelId.toInt(),
-            Intent(this, MainActivity::class.java).putExtra("channelId", e.channelId).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        nm.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_CONNECTION, if (pt) "Conexão em segundo plano" else "Background connection", NotificationManager.IMPORTANCE_MIN,
+            ).apply {
+                description = if (pt) {
+                    "O aviso fixo que mantém as menções chegando. Pode esconder."
+                } else {
+                    "The steady notice that keeps mentions coming. Safe to hide."
+                }
+                setShowBadge(false)
+            },
         )
-        val n = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("${e.author} · #${e.channel}")
-            .setContentText(e.body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(e.body))
-            .setSubText(e.server)
-            .setContentIntent(open)
-            .setAutoCancel(true)
-            .build()
-        try {
-            NotificationManagerCompat.from(this).notify("mention", e.channelId.toInt(), n)
-        } catch (_: SecurityException) {
-        }
     }
 }

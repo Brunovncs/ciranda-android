@@ -12,6 +12,8 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.util.Locale
 
@@ -37,9 +39,28 @@ class VoiceService : Service() {
         }
         if (watch == null) {
             watch = CirandaApp.scope.launch {
-                Engine.voice.collect { v -> if (v != null) show(v) }
+                // The call's end is seen here rather than stopped from outside, which could land
+                // before the service is in the foreground and crash it. A call refused before it
+                // began leaves nothing to wait for either.
+                var seen = Engine.voice.value != null
+                launch {
+                    kotlinx.coroutines.delay(15_000)
+                    if (!seen) stopSelf()
+                }
+                Engine.voice
+                    .map { v -> v?.let { Triple(it.channel, it.state, it.muted) } }
+                    .distinctUntilChanged()
+                    .collect { shown ->
+                        if (shown == null) {
+                            if (seen) stopSelf()
+                        } else {
+                            seen = true
+                            show(Engine.voice.value)
+                        }
+                    }
             }
         }
+        running = true
         return START_NOT_STICKY
     }
 
@@ -73,6 +94,7 @@ class VoiceService : Service() {
     }
 
     override fun onDestroy() {
+        running = false
         watch?.cancel()
         wake?.takeIf { it.isHeld }?.release()
         wifi?.takeIf { it.isHeld }?.release()
@@ -91,6 +113,19 @@ class VoiceService : Service() {
     }
 
     companion object {
+        @Volatile
+        var running = false
+
+        /** Started for a call; it stops itself when the call ends. */
+        fun start(ctx: Context) {
+            if (running) return
+            try {
+                androidx.core.content.ContextCompat.startForegroundService(ctx, Intent(ctx, VoiceService::class.java))
+            } catch (e: Exception) {
+                android.util.Log.w("ciranda", "voice service not started: $e")
+            }
+        }
+
         const val MUTE = "app.ciranda.android.MUTE"
         const val UNMUTE = "app.ciranda.android.UNMUTE"
         const val LEAVE = "app.ciranda.android.LEAVE"

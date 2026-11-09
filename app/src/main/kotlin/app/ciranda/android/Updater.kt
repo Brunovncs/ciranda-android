@@ -187,6 +187,7 @@ object Updater {
         if (!pm.canRequestPackageInstalls()) {
             val i = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            AppLock.expectReturn()
             ctx.startActivity(i)
             return
         }
@@ -194,6 +195,7 @@ object Updater {
         val i = Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, "application/vnd.android.package-archive")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        AppLock.expectReturn()
         ctx.startActivity(i)
     }
 

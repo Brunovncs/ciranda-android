@@ -9,11 +9,11 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import app.ciranda.android.ui.CirandaTheme
 import app.ciranda.android.ui.Root
 import app.ciranda.android.ui.tr
@@ -23,13 +23,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private var afterMic: (() -> Unit)? = null
     private var uploadTo: Long? = null
     private var uploadBody: String = ""
 
     /** Set when a notification asked for a channel or the update screen. */
     val pending = MutableStateFlow<Intent?>(null)
+
+    /** Counts coming back to the app, so a screen can look again at what was changed elsewhere. */
+    val resumes = MutableStateFlow(0)
 
     private val mic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) {
@@ -57,8 +60,17 @@ class MainActivity : ComponentActivity() {
         ) {
             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
-        pending.value = intent
-        takeInvite(intent)
+        // Once: not again when the activity is made again, nor from the recent apps.
+        val fresh = savedInstanceState == null && (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0
+        if (fresh) {
+            pending.value = intent
+            takeInvite(intent)
+            takeMention(intent)
+        }
+        savedInstanceState?.let {
+            uploadTo = it.getLong("uploadTo", -1).takeIf { id -> id >= 0 }
+            uploadBody = it.getString("uploadBody") ?: ""
+        }
         setContent {
             CirandaTheme {
                 Root(this)
@@ -70,15 +82,70 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         pending.value = intent
         takeInvite(intent)
+        takeMention(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // The file picker may outlive this process; what it was for comes back with it.
+        uploadTo?.let { outState.putLong("uploadTo", it) }
+        outState.putString("uploadBody", uploadBody)
     }
 
     override fun onStart() {
         super.onStart()
         CirandaApp.visible = true
         Engine.send("visible", "on" to true)
+        AppLock.onStart()
+        applyPrivacy()
+        // Stopped by the system since, it starts again here, where Android allows it.
+        if (Prefs.notify.value && Engine.state.value.saved.any { it.signedIn }) ConnectionService.start(this)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppLock.onResume()
+        resumes.value += 1
+        // A file that finished downloading while away opens now; Android would not let it then.
+        waitingFile?.let {
+            waitingFile = null
+            openFile(it)
+        }
+    }
+
+    private var waitingFile: Event.File? = null
+
+    /**
+     * Something that would end the voice call (another server, an invite): asked first while in
+     * one. The question shows in `Root`.
+     */
+    val confirmLeave = MutableStateFlow<(() -> Unit)?>(null)
+
+    fun leavingCall(go: () -> Unit) {
+        if (Engine.voice.value != null) confirmLeave.value = go else go()
+    }
+
+    /** With the lock on, the app's picture in the recent apps is blank too. */
+    fun applyPrivacy() {
+        if (Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(!Prefs.lock.value)
+    }
+
+    // Whatever the app opens itself (a picker, the share sheet, a setting) is come back from
+    // without the lock asking again.
+    override fun startActivity(intent: Intent, options: Bundle?) {
+        AppLock.expectReturn()
+        super.startActivity(intent, options)
+    }
+
+    @Deprecated("Still what the activity result launchers call")
+    override fun startActivityForResult(intent: Intent, requestCode: Int, options: Bundle?) {
+        AppLock.expectReturn()
+        @Suppress("DEPRECATION")
+        super.startActivityForResult(intent, requestCode, options)
     }
 
     override fun onStop() {
+        AppLock.onStop(isChangingConfigurations)
         CirandaApp.visible = false
         Engine.send("visible", "on" to false)
         super.onStop()
@@ -88,9 +155,21 @@ class MainActivity : ComponentActivity() {
     private fun takeInvite(intent: Intent?) {
         val data = intent?.data ?: return
         if (data.scheme != "ciranda") return
-        Engine.send("invite", "link" to data.toString())
+        val link = data.toString()
+        leavingCall { Engine.send("invite", "link" to link) }
         // Handled: a configuration change must not open it again.
         intent.data = null
+    }
+
+    /** A mention's notification, tapped: its channel, on its server. */
+    private fun takeMention(intent: Intent?) {
+        if (intent?.action != Notifier.OPEN) return
+        val server = intent.getStringExtra(Notifier.SERVER) ?: return
+        val channel = intent.getLongExtra(Notifier.CHANNEL, -1).takeIf { it >= 0 }
+        val username = intent.getStringExtra(Notifier.USERNAME)
+        val here = Engine.state.value.session?.let { it.url.trimEnd('/').equals(server.trimEnd('/'), true) && it.me.nickname.equals(username, true) } == true
+        val go = { Engine.send("openAt", "server" to server, "username" to username, "channelId" to channel) }
+        if (here) go() else leavingCall(go)
     }
 
     /** The share sheet, with an invite to the server on screen. */
@@ -102,6 +181,10 @@ class MainActivity : ComponentActivity() {
 
     /** A downloaded attachment, opened with whatever app takes its kind. */
     fun openFile(e: Event.File) {
+        if (!lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) {
+            waitingFile = e
+            return
+        }
         val f = File(e.path)
         val ext = f.extension.lowercase()
         val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"

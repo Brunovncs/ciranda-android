@@ -21,21 +21,25 @@ object Pictures {
 
     private val shown = mutableStateMapOf<String, ImageBitmap>()
     private val asked = mutableSetOf<String>()
-    private val failed = mutableSetOf<String>()
+
+    /** When each picture failed: drawn as failed (state, so it shows), asked again after a while. */
+    private val failed = mutableStateMapOf<String, Long>()
+    private const val RETRY_MS = 60_000L
     private val order = ArrayDeque<String>()
     private var bytes = 0L
 
     fun onEvent(e: Event.Picture) {
         val path = e.path
         if (path == null) {
-            synchronized(this) {
-                asked.remove(e.hash)
-                failed.add(e.hash)
-            }
+            CirandaApp.scope.launch { fail(e.hash) }
             return
         }
         CirandaApp.scope.launch {
-            val bmp = withContext(Dispatchers.IO) { decode(File(path)) } ?: return@launch
+            val bmp = withContext(Dispatchers.IO) { decode(File(path)) }
+            if (bmp == null) {
+                fail(e.hash)
+                return@launch
+            }
             withContext(Dispatchers.Main) {
                 synchronized(this@Pictures) {
                     asked.remove(e.hash)
@@ -61,9 +65,17 @@ object Pictures {
         return BitmapFactory.decodeFile(f.path, opts)?.asImageBitmap()
     }
 
+    private fun fail(hash: String) {
+        synchronized(this) { asked.remove(hash) }
+        failed[hash] = android.os.SystemClock.elapsedRealtime()
+    }
+
     private fun ask(hash: String, kind: String) {
         synchronized(this) {
-            if (shown.containsKey(hash) || hash in asked || hash in failed) return
+            val at = failed[hash]
+            if (at != null && android.os.SystemClock.elapsedRealtime() - at < RETRY_MS) return
+            if (shown.containsKey(hash) || hash in asked) return
+            failed.remove(hash)
             asked.add(hash)
         }
         Engine.send("picture", "hash" to hash, "kind" to kind)
@@ -78,11 +90,5 @@ object Pictures {
         return got
     }
 
-    fun failed(hash: String?): Boolean = hash != null && synchronized(this) { hash in failed }
-
-    fun clear() {
-        synchronized(this) {
-            failed.clear()
-        }
-    }
+    fun failed(hash: String?): Boolean = hash != null && failed.containsKey(hash)
 }

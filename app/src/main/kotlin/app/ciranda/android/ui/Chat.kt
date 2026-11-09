@@ -25,8 +25,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -40,7 +40,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -56,6 +56,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -98,9 +99,15 @@ import java.text.DateFormat
 import java.util.Calendar
 import java.util.Date
 
-/** What the composer is doing besides writing: answering a message, or editing one of yours. */
-private val replying = MutableStateFlow<Message?>(null)
-private val editing = MutableStateFlow<Message?>(null)
+/**
+ * What the composer is doing besides writing: answering a message, or editing one of yours. Each
+ * belongs to the channel (on its server) it was started in, and is no use in another.
+ */
+private data class Aside(val where: String, val message: Message)
+private val replying = MutableStateFlow<Aside?>(null)
+private val editing = MutableStateFlow<Aside?>(null)
+
+private fun where(s: SessionState, channelId: Long) = "${s.url}#$channelId"
 
 /** Messages by the same person this close together share one header. */
 private const val GROUP_WINDOW_MS = 7 * 60 * 1000L
@@ -109,7 +116,8 @@ private val QUICK = listOf("👍", "❤️", "😂", "😮", "😢", "🔥")
 @Composable
 fun ChatView(activity: MainActivity, s: SessionState, chat: ChatState) {
     val p = LocalPalette.current
-    val list = rememberLazyListState()
+    // Each channel opens at its newest message, not where the last one was left.
+    val list = remember(chat.channelId) { LazyListState() }
     var viewer by remember { mutableStateOf<String?>(null) }
     val newest = chat.messages.asReversed()
     LaunchedEffect(chat.channelId, list) {
@@ -124,7 +132,16 @@ fun ChatView(activity: MainActivity, s: SessionState, chat: ChatState) {
     }
     if (!chat.loaded) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            if (chat.error != null) Text(chat.error, color = p.danger, modifier = Modifier.padding(24.dp)) else CircularProgressIndicator()
+            if (chat.error != null) {
+                Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(chat.error, color = p.danger, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    androidx.compose.material3.TextButton({ Engine.send("open", "channelId" to chat.channelId) }) {
+                        Text(tr("Try again", "Tentar de novo"))
+                    }
+                }
+            } else {
+                CircularProgressIndicator()
+            }
         }
         return
     }
@@ -225,7 +242,7 @@ private fun MessageRow(s: SessionState, m: Message, grouped: Boolean, onPicture:
             }
             DropdownMenuItem(
                 { Text(tr("Reply", "Responder")) },
-                { menu = false; editing.value = null; replying.value = m },
+                { menu = false; editing.value = null; replying.value = Aside(where(s, m.channelId), m) },
                 leadingIcon = { Icon(Icons.AutoMirrored.Filled.Reply, null) },
             )
             if (m.body.isNotEmpty()) {
@@ -241,7 +258,7 @@ private fun MessageRow(s: SessionState, m: Message, grouped: Boolean, onPicture:
             if (mine) {
                 DropdownMenuItem(
                     { Text(tr("Edit", "Editar")) },
-                    { menu = false; replying.value = null; editing.value = m },
+                    { menu = false; replying.value = null; editing.value = Aside(where(s, m.channelId), m) },
                     leadingIcon = { Icon(Icons.Filled.Edit, null) },
                 )
             }
@@ -362,7 +379,7 @@ private fun Attachment(m: Message, hash: String, onPicture: (String) -> Unit) {
             }.padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(Icons.Filled.InsertDriveFile, null, tint = p.accent)
+        Icon(Icons.AutoMirrored.Filled.InsertDriveFile, null, tint = p.accent)
         Spacer(Modifier.width(10.dp))
         Column {
             Text(m.attachmentName ?: tr("File", "Arquivo"), color = p.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -408,18 +425,30 @@ private fun PictureViewer(hash: String, onClose: () -> Unit) {
 @Composable
 fun Composer(activity: MainActivity, s: SessionState, channel: Channel) {
     val p = LocalPalette.current
-    var text by remember(channel.id) { mutableStateOf("") }
-    val reply by replying.collectAsState()
-    val edit by editing.collectAsState()
+    val here = where(s, channel.id)
+    // The draft survives the screen turning, per channel.
+    var text by rememberSaveable(here) { mutableStateOf("") }
+    val reply = replying.collectAsState().value?.takeIf { it.where == here }?.message
+    val edit = editing.collectAsState().value?.takeIf { it.where == here }?.message
     var uploading by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        Engine.events.collect { if (it is Event.Uploading) uploading = it.on }
+    LaunchedEffect(here) {
+        Engine.events.collect { e ->
+            when {
+                e is Event.Uploading -> {
+                    uploading = e.on
+                    // The caption went with the file.
+                    if (e.on) text = ""
+                }
+                // Not sent: the text comes back, unless something else was typed since.
+                e is Event.SendFailed && e.channelId == channel.id && text.isBlank() -> text = e.body
+            }
+        }
     }
     LaunchedEffect(edit?.id) { edit?.let { text = it.body } }
     Column(Modifier.fillMaxWidth().background(p.surface).navigationBarsPadding().imePadding()) {
         val banner = when {
             edit != null -> tr("Editing your message", "Editando sua mensagem")
-            reply != null -> tr("Replying to ${reply!!.author}", "Respondendo a ${reply!!.author}")
+            reply != null -> tr("Replying to ${reply.author}", "Respondendo a ${reply.author}")
             uploading -> tr("Sending file…", "Enviando arquivo…")
             else -> null
         }
@@ -434,7 +463,7 @@ fun Composer(activity: MainActivity, s: SessionState, channel: Channel) {
             }
         }
         Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.Bottom) {
-            IconButton({ activity.pickAttachment(channel.id, text); text = "" }, enabled = edit == null && !uploading) {
+            IconButton({ activity.pickAttachment(channel.id, text) }, enabled = edit == null && !uploading) {
                 Icon(Icons.Filled.AddCircle, tr("Send a file", "Enviar arquivo"), tint = p.muted)
             }
             TextField(

@@ -113,5 +113,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended:1.7.8")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.core:core-ktx:1.19.1")
+    // The app lock (`AppLock`): the phone's own prompt, which needs a FragmentActivity.
+    implementation("androidx.biometric:biometric:1.1.0")
+    implementation("androidx.fragment:fragment:1.9.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

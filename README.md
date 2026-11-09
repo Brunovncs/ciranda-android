@@ -15,7 +15,9 @@ Daí em diante, Ciranda avisa quando sai uma versão nova e se atualiza sozinha:
 - Canais de texto: mensagens com a mesma formatação do desktop (negrito, código, citações, listas, `:emoji:`, menções), imagens, arquivos, reações, respostas, edição e exclusão.
 - Canais de voz: entrar e sair, mutar, ensurdecer, ver quem está falando, volume de cada pessoa (até 350%), cancelamento de eco e supressão de ruído (DeepFilterNet, a mesma do desktop).
 - A voz continua com a tela apagada ou com outro app na frente, com mutar e sair na notificação.
-- Notificação quando alguém te menciona.
+- Bloqueio com digital, rosto ou o PIN do celular (oferecido depois de entrar; em Configurações → Segurança, com quanto tempo fora antes de pedir de novo). Voltar de algo que o próprio app abriu (escolher arquivo, compartilhar, PIN) não pede de novo.
+- Trocar a senha da conta em Configurações → Conta. Esqueceu a senha? Quem cuida do servidor define uma nova no painel.
+- Notificação quando alguém te menciona (`@você`, `@everyone`, `@todos`, `@all`, `@here` ou uma resposta), em qualquer servidor em que você entrou, mesmo com o app fechado. Uma conexão leve fica aberta para isso, sem te mostrar online; o Android exige um aviso fixo, silencioso, que dá para esconder. Precisa de servidor com a versão que avisa menções em segundo plano (`mentions` em `/api/health`).
 - Atualização pelo próprio app, como no desktop.
 
 Ainda não tem: conversas privadas e chamadas privadas, assistir telas e câmeras, compartilhar a tela ou a câmera, Cirandinha e soundpad.

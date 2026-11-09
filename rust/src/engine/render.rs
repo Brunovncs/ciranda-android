@@ -50,8 +50,8 @@ fn span(s: &Span, names: &Names) -> Value {
             },
         },
         Kind::Mention { name, raw } => {
-            if name == "everyone" {
-                json!({ "mention": "@everyone", "me": true })
+            if crate::markdown::calls_everyone(name) {
+                json!({ "mention": raw.to_lowercase(), "me": true })
             } else {
                 match names.users.values().find(|u| u.nickname.to_lowercase() == *name) {
                     Some(u) => {
