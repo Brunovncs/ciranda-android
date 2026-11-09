@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material3.AlertDialog
@@ -265,6 +266,9 @@ private fun ChannelList(
                     if (s.up) tr("${s.online.size} online", "${s.online.size} online") else tr("Reconnecting…", "Reconectando…"),
                     style = MaterialTheme.typography.labelSmall, color = if (s.up) p.muted else p.warning,
                 )
+            }
+            IconButton({ Engine.send("shareInvite") }) {
+                Icon(Icons.Filled.PersonAdd, tr("Invite friends", "Convidar amigos"), tint = p.accent)
             }
         }
         HorizontalDivider(color = p.border)

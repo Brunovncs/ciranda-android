@@ -68,6 +68,18 @@ fun SignInScreen(state: AppState) {
         }
     }
     LaunchedEffect(state.needsServerPassword) { if (state.needsServerPassword) showServerPassword = true }
+    // An invite link fills everything in but the account.
+    LaunchedEffect(state.formSeq) {
+        if (state.formSeq > 0) {
+            server = state.formServer
+            serverPassword = state.formServerPassword
+            showServerPassword = state.formServerPassword.isNotEmpty()
+            nickname = ""
+            password = ""
+            register = true
+            seeded = true
+        }
+    }
     val busy = state.phase == "signingIn"
     val submit = {
         Engine.send(
@@ -90,6 +102,20 @@ fun SignInScreen(state: AppState) {
                 style = MaterialTheme.typography.bodyMedium, color = p.muted,
             )
             Spacer(Modifier.height(24.dp))
+
+            state.formInvite?.let { place ->
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(p.accent.copy(alpha = 0.16f)).padding(14.dp),
+                ) {
+                    Text(tr("You were invited to", "Você foi convidado para"), color = p.muted, style = MaterialTheme.typography.bodySmall)
+                    Text(place, color = p.text, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        tr("Choose a name and a password to make your account.", "Escolha um nome e uma senha para criar sua conta."),
+                        color = p.muted, style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+            }
 
             val saved = state.saved.filter { it.signedIn }
             if (saved.isNotEmpty()) {

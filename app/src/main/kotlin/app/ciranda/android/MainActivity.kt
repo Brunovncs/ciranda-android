@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         pending.value = intent
+        takeInvite(intent)
         setContent {
             CirandaTheme {
                 Root(this)
@@ -68,6 +69,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         pending.value = intent
+        takeInvite(intent)
     }
 
     override fun onStart() {
@@ -80,6 +82,22 @@ class MainActivity : ComponentActivity() {
         CirandaApp.visible = false
         Engine.send("visible", "on" to false)
         super.onStop()
+    }
+
+    /** `ciranda://join?...`, as the invite page opens it; the engine reads it. */
+    private fun takeInvite(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme != "ciranda") return
+        Engine.send("invite", "link" to data.toString())
+        // Handled: a configuration change must not open it again.
+        intent.data = null
+    }
+
+    /** The share sheet, with an invite to the server on screen. */
+    fun shareInvite(e: Event.InviteLink) {
+        val text = tr("Come to ${e.name} on Ciranda: ${e.link}", "Vem pro ${e.name} no Ciranda: ${e.link}")
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
+        startActivity(Intent.createChooser(send, tr("Invite friends", "Convidar amigos")))
     }
 
     /** A downloaded attachment, opened with whatever app takes its kind. */

@@ -88,6 +88,10 @@ data class AppState(
     val formServer: String = "",
     val formNickname: String = "",
     val formRegister: Boolean = false,
+    /** Filled in by an invite link: its server password, where it leads, and which invite it was. */
+    val formServerPassword: String = "",
+    val formInvite: String? = null,
+    val formSeq: Long = 0,
     val saved: List<SavedServer> = emptyList(),
     val session: SessionState? = null,
     val settings: Settings = Settings(),
@@ -172,6 +176,7 @@ sealed interface Event {
     data class InCall(val on: Boolean) : Event
     data class File(val path: String, val name: String) : Event
     data class Uploading(val on: Boolean) : Event
+    data class InviteLink(val link: String, val name: String) : Event
 }
 
 /** The app's state as the Rust engine last said it, and its one-off events. */
@@ -207,6 +212,7 @@ object Engine {
             "needsPassword" -> _events.tryEmit(Event.NeedsPassword(o.optLong("channelId"), o.optBoolean("wrong")))
             "file" -> _events.tryEmit(Event.File(o.optString("path"), o.optString("name")))
             "call" -> _events.tryEmit(Event.InCall(o.optBoolean("on")))
+            "inviteLink" -> _events.tryEmit(Event.InviteLink(o.optString("link"), o.optString("name")))
             "uploading" -> _events.tryEmit(Event.Uploading(o.optBoolean("on")))
             "message" -> _events.tryEmit(
                 Event.NewMessage(
@@ -252,6 +258,9 @@ private fun parseState(o: JSONObject): AppState {
         formServer = form.optString("server"),
         formNickname = form.optString("nickname"),
         formRegister = form.optBoolean("register"),
+        formServerPassword = form.optString("serverPassword"),
+        formInvite = form.str("invite"),
+        formSeq = form.optLong("seq"),
         saved = saved,
         session = o.optJSONObject("session")?.let(::parseSession),
         settings = settings,

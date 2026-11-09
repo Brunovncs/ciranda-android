@@ -30,6 +30,13 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Invite links: the invite page (brunovncs.github.io/ciranda/convite) opens these. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ciranda" android:host="join" />
+            </intent-filter>
         </activity>
 
         <service

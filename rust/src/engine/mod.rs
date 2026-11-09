@@ -11,7 +11,8 @@ mod signin;
 
 use crate::core::api::Api;
 use crate::core::cache::Cache;
-use crate::core::settings::{SavedServer, Store};
+use crate::core::invite::Invite;
+use crate::core::settings::{SavedServer, Store, same_server};
 use crate::core::types::*;
 use crate::media::audio;
 use call::Call;
@@ -107,6 +108,8 @@ pub struct Engine {
     sign_in_form: Value,
     /// Bumped by every sign-in and sign-out: an answer for an older one is dropped.
     sign_in_generation: u64,
+    /// Invites opened, so the form knows a new one from the last.
+    invites: u64,
     pub session: Option<Session>,
     pub call: Option<Call>,
     dirty: Dirty,
@@ -129,6 +132,7 @@ impl Engine {
             needs_server_password: false,
             sign_in_form: Value::Null,
             sign_in_generation: 0,
+            invites: 0,
             session: None,
             call: None,
             dirty: Dirty::default(),
@@ -281,6 +285,8 @@ impl Engine {
                 }
             }
             "signIn" => self.sign_in(&cmd),
+            "invite" => self.open_invite(&text("link")),
+            "shareInvite" => self.share_invite(),
             "resume" => self.resume(cmd.get("url").and_then(Value::as_str), cmd.get("username").and_then(Value::as_str)),
             "signOut" => self.sign_out(flag("forget")),
             "open" => {
@@ -449,6 +455,52 @@ impl Engine {
         };
         self.sign_in_form = json!({ "server": form.server, "nickname": form.nickname, "register": form.register });
         self.begin_sign_in(form);
+    }
+
+    /// An invite link opened on the phone (`core::invite`): the server it names, signed in to
+    /// straight away where this phone already is, and otherwise the form, filled in, making an
+    /// account.
+    fn open_invite(&mut self, link: &str) {
+        let Some(invite) = Invite::parse(link) else {
+            self.toast(tr!("That invite link is broken.", "Esse link de convite está quebrado."));
+            return;
+        };
+        let place = if invite.name.is_empty() { invite.server.clone() } else { invite.name.clone() };
+        if self.session.as_ref().is_some_and(|s| same_server(&s.api.base(), &invite.server)) {
+            self.toast(trf!("You're already in {}.", "Você já está em {}.", place));
+            return;
+        }
+        let kept =
+            self.store.values.saved_servers.iter().find(|s| same_server(&s.url, &invite.server) && !s.session_token.is_empty()).cloned();
+        if let Some(saved) = kept {
+            self.resume(Some(&saved.url), Some(&saved.username));
+            return;
+        }
+        // Whatever sign-in was on its way (the last server, at start) gives way to the invite.
+        self.sign_in_generation += 1;
+        self.end_session();
+        self.invites += 1;
+        self.phase = Phase::SignedOut;
+        self.sign_in_error = None;
+        self.needs_server_password = false;
+        self.sign_in_form = json!({
+            "server": invite.server,
+            "serverPassword": invite.password,
+            "nickname": "",
+            "register": true,
+            "invite": place,
+            "seq": self.invites,
+        });
+        self.mark();
+    }
+
+    /// An invite to the server on screen, for the interface to share.
+    fn share_invite(&self) {
+        let Some(s) = self.session.as_ref() else { return };
+        let url = s.api.base();
+        let password = self.store.values.saved_server_as(&url, &s.me.nickname).map(|v| v.password.clone()).unwrap_or_default();
+        let link = Invite::new(&url, &password, &s.server_name).link();
+        self.send(json!({ "type": "inviteLink", "link": link, "name": s.server_name }));
     }
 
     /// A saved server: the one asked for, or the last one used.

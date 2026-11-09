@@ -23,6 +23,7 @@ fun Root(activity: MainActivity) {
             when (e) {
                 is Event.Toast -> Toast.makeText(activity, e.text, Toast.LENGTH_LONG).show()
                 is Event.File -> activity.openFile(e)
+                is Event.InviteLink -> activity.shareInvite(e)
                 else -> {}
             }
         }
