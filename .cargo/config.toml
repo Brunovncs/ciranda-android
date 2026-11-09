@@ -1,0 +1,4 @@
+# libwebrtc is built against the static C runtime on Windows (the voice bot in rust/examples is the
+# only thing built for Windows here).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

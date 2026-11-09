@@ -1,0 +1,3 @@
+[submodule "ciranda"]
+	path = ciranda
+	url = https://github.com/Brunovncs/ciranda.git
