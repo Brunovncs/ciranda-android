@@ -283,10 +283,10 @@ private fun Notifications(activity: MainActivity) {
     val resumed by activity.resumes.collectAsState()
     Section(tr("Notifications", "Notificações"))
     Toggle(
-        tr("Mentions with the app closed", "Menções com o app fechado"),
+        tr("Mention notifications", "Notificações de menção"),
         tr(
-            "When someone writes @you, @everyone or @all, on any of your servers. Keeps a light connection, with a silent notice of its own.",
-            "Quando alguém escrever @você, @everyone ou @todos, em qualquer servidor seu. Mantém uma conexão leve, com um aviso silencioso fixo.",
+            "When someone writes @you, @everyone or @all, on any of your servers, while Ciranda is running.",
+            "Quando alguém escrever @você, @everyone ou @todos, em qualquer servidor seu, enquanto o Ciranda estiver rodando.",
         ),
         notify,
     ) { Prefs.setNotify(it) }
