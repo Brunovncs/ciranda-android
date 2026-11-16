@@ -54,7 +54,6 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import app.ciranda.android.AppState
 import app.ciranda.android.Engine
@@ -188,13 +187,7 @@ fun SignInScreen(state: AppState) {
             )
             if (showServerPassword) {
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    serverPassword, { serverPassword = it }, Modifier.fillMaxWidth(),
-                    label = { Text(tr("Server password", "Senha do servidor")) },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
-                )
+                PasswordField(serverPassword, { serverPassword = it }, tr("Server password", "Senha do servidor"), Modifier.fillMaxWidth())
             } else {
                 TextButton({ showServerPassword = true }, Modifier.fillMaxWidth()) {
                     Text(tr("This server has a password", "Este servidor tem senha"))
@@ -208,13 +201,10 @@ fun SignInScreen(state: AppState) {
                 keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Next),
             )
             Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                password, { password = it }, Modifier.fillMaxWidth().focusRequester(passwordFocus),
-                label = { Text(tr("Password", "Senha")) },
-                singleLine = true,
+            PasswordField(
+                password, { password = it }, tr("Password", "Senha"), Modifier.fillMaxWidth().focusRequester(passwordFocus),
                 isError = state.wrongPassword && state.signInError != null && password.isEmpty(),
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
+                imeAction = ImeAction.Go,
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = { if (!busy) submit() }),
             )
             Row(

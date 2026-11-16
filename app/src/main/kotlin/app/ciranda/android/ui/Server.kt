@@ -1,6 +1,7 @@
 package app.ciranda.android.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -37,8 +38,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Headset
 import androidx.compose.material.icons.filled.HeadsetOff
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
@@ -46,6 +50,7 @@ import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -95,7 +100,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.ciranda.android.AppState
@@ -104,6 +109,7 @@ import app.ciranda.android.Engine
 import app.ciranda.android.Event
 import app.ciranda.android.MainActivity
 import app.ciranda.android.Member
+import app.ciranda.android.SavedServer
 import app.ciranda.android.SessionState
 import app.ciranda.android.Updater
 import app.ciranda.android.VoiceLink
@@ -174,6 +180,14 @@ fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
                         scope.launch { drawer.close() }
                     },
                     onSettings = { sheet = Sheet.Settings },
+                    saved = state.saved,
+                    // Straight to a server already signed in to, or to the list of them for another.
+                    onSwitch = { target ->
+                        activity.leavingCall {
+                            scope.launch { drawer.close() }
+                            if (target == null) Engine.send("switch") else Engine.send("resume", "url" to target.url, "username" to target.username)
+                        }
+                    },
                 )
             }
         },
@@ -241,13 +255,9 @@ fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
                         modifier = Modifier.semantics { if (wrong) liveRegion = LiveRegionMode.Polite },
                     )
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        pw, { pw = it }, Modifier.focusRequester(focus),
-                        label = { Text(tr("Password", "Senha")) },
-                        singleLine = true, isError = wrong,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = { join() }),
+                    PasswordField(
+                        pw, { pw = it }, tr("Password", "Senha"), Modifier.focusRequester(focus),
+                        isError = wrong, imeAction = ImeAction.Done, keyboardActions = KeyboardActions(onDone = { join() }),
                     )
                 }
             },
@@ -326,21 +336,54 @@ private fun ChannelList(
     onText: (Channel) -> Unit,
     onVoice: (Channel) -> Unit,
     onSettings: () -> Unit,
+    saved: List<SavedServer>,
+    onSwitch: (SavedServer?) -> Unit,
 ) {
     val p = LocalPalette.current
+    var switching by rememberSaveable { mutableStateOf(false) }
+    // The others signed in to: this one is already on screen.
+    val others = remember(saved, s.url, s.me.nickname) {
+        saved.filter { it.signedIn && !(it.username == s.me.nickname && sameServer(it.url, s.url)) }
+    }
     Column(Modifier.fillMaxHeight().statusBarsPadding().navigationBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Avatar(s.name, s.icon, size = 40.dp, kind = "server")
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(s.name, style = MaterialTheme.typography.titleMedium, color = p.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    if (s.up) "${s.online.size} online" else tr("Reconnecting…", "Reconectando…"),
-                    style = MaterialTheme.typography.labelSmall, color = if (s.up) p.muted else p.warning,
+        Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            val expanded = tr("Showing your servers", "Mostrando seus servidores")
+            val collapsed = tr("Your servers hidden", "Seus servidores ocultos")
+            Row(
+                Modifier.weight(1f).heightIn(min = 64.dp).clip(RoundedCornerShape(12.dp))
+                    .clickable(role = Role.Button, onClickLabel = tr("Switch server", "Trocar de servidor")) { switching = !switching }
+                    .semantics { stateDescription = if (switching) expanded else collapsed }
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Avatar(s.name, s.icon, size = 40.dp, kind = "server")
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(s.name, style = MaterialTheme.typography.titleMedium, color = p.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        if (s.up) "${s.online.size} online" else tr("Reconnecting…", "Reconectando…"),
+                        style = MaterialTheme.typography.labelSmall, color = if (s.up) p.muted else p.warning,
+                    )
+                }
+                Icon(
+                    if (switching) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown, null,
+                    tint = p.muted,
                 )
             }
             IconButton({ Engine.send("shareInvite") }) {
                 Icon(Icons.Filled.PersonAdd, tr("Invite friends", "Convidar amigos"), tint = p.accent)
+            }
+        }
+        AnimatedVisibility(
+            switching,
+            enter = expandVertically(tween(160)) + fadeIn(tween(160)),
+            exit = shrinkVertically(tween(120)) + fadeOut(tween(100)),
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp).padding(bottom = 8.dp)) {
+                for (o in others) {
+                    ServerChoice(Icons.Filled.Dns, o.name.ifEmpty { o.host }, "${o.username} · ${o.host}") { onSwitch(o) }
+                }
+                ServerChoice(Icons.Filled.SwapHoriz, tr("Another server", "Outro servidor"), null) { onSwitch(null) }
             }
         }
         HorizontalDivider(color = p.border)
@@ -383,6 +426,29 @@ private fun ChannelList(
             IconButton(onSettings) { Icon(Icons.Filled.Settings, tr("Settings", "Configurações"), tint = p.muted) }
         }
     }
+}
+
+@Composable
+private fun ServerChoice(icon: ImageVector, title: String, detail: String?, onClick: () -> Unit) {
+    val p = LocalPalette.current
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 1.dp).clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClick = onClick)
+            .heightIn(min = 48.dp).padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = p.accent, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = p.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            detail?.let { Text(it, color = p.muted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+        }
+    }
+}
+
+/** Whether two addresses are the same server, however they were typed (as the engine compares them). */
+private fun sameServer(a: String, b: String): Boolean {
+    fun norm(u: String) = u.trim().let { if ("://" in it) it else "http://$it" }.trimEnd('/')
+    return a.isNotBlank() && norm(a).equals(norm(b), ignoreCase = true)
 }
 
 @Composable

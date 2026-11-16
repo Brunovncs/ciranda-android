@@ -269,16 +269,12 @@ private fun ChangePassword(onClose: () -> Unit) {
                 for ((i, f) in fields.withIndex()) {
                     val (value, set, label) = f
                     val last = i == fields.lastIndex
-                    androidx.compose.material3.OutlinedTextField(
-                        value, set,
+                    PasswordField(
+                        value, set, label,
                         Modifier.fillMaxWidth().padding(vertical = 4.dp).then(if (i == 0) Modifier.focusRequester(focus) else Modifier),
-                        label = { Text(label) }, singleLine = true, enabled = !busy,
+                        enabled = !busy,
                         isError = last && again.isNotEmpty() && again != next,
-                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
-                            imeAction = if (last) androidx.compose.ui.text.input.ImeAction.Done else androidx.compose.ui.text.input.ImeAction.Next,
-                        ),
+                        imeAction = if (last) androidx.compose.ui.text.input.ImeAction.Done else androidx.compose.ui.text.input.ImeAction.Next,
                         keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { submit() }),
                     )
                 }

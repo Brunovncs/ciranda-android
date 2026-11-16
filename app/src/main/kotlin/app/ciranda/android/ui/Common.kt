@@ -12,7 +12,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -32,6 +40,10 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.ciranda.android.Engine
@@ -120,6 +132,44 @@ fun FadeIn(content: @Composable () -> Unit) {
     val alpha = remember { Animatable(0f) }
     LaunchedEffect(Unit) { alpha.animateTo(1f, tween(140)) }
     Box(Modifier.fillMaxSize().graphicsLayer { this.alpha = alpha.value }) { content() }
+}
+
+/**
+ * A password field with an eye to see what was typed. Hidden again whenever the field is drawn
+ * anew (a turned screen, a reopened dialog): a password left showing is not what anyone expects.
+ */
+@Composable
+fun PasswordField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    isError: Boolean = false,
+    imeAction: ImeAction = ImeAction.Next,
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+) {
+    var shown by remember { mutableStateOf(false) }
+    OutlinedTextField(
+        value, onValueChange, modifier,
+        label = { Text(label) }, singleLine = true, enabled = enabled, isError = isError,
+        visualTransformation = if (shown) VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            IconButton({ shown = !shown }, enabled = enabled) {
+                Icon(
+                    if (shown) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                    tr(if (shown) "Hide password" else "Show password", if (shown) "Ocultar senha" else "Mostrar senha"),
+                )
+            }
+        },
+        keyboardOptions = KeyboardOptions(
+            // Password either way: the keyboard neither suggests nor learns from what is typed.
+            keyboardType = KeyboardType.Password,
+            autoCorrectEnabled = false,
+            imeAction = imeAction,
+        ),
+        keyboardActions = keyboardActions,
+    )
 }
 
 /** A one-pixel line along an edge, drawn rather than laid out: no extra node, no extra height. */
