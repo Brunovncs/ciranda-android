@@ -61,7 +61,9 @@ private fun typography(): Typography {
         headlineLarge = base.headlineLarge.f(), headlineMedium = base.headlineMedium.f(), headlineSmall = base.headlineSmall.f(),
         titleLarge = base.titleLarge.f().copy(fontWeight = FontWeight.SemiBold), titleMedium = base.titleMedium.f().copy(fontWeight = FontWeight.SemiBold),
         titleSmall = base.titleSmall.f(), bodyLarge = base.bodyLarge.f().copy(fontSize = 16.sp), bodyMedium = base.bodyMedium.f(),
-        bodySmall = base.bodySmall.f(), labelLarge = base.labelLarge.f(), labelMedium = base.labelMedium.f(), labelSmall = base.labelSmall.f(),
+        bodySmall = base.bodySmall.f(), labelLarge = base.labelLarge.f(), labelMedium = base.labelMedium.f(),
+        // 11sp is where the timestamps, badges and sub-lines stopped being comfortable to read.
+        labelSmall = base.labelSmall.f().copy(fontSize = 12.sp, lineHeight = 16.sp),
     )
 }
 

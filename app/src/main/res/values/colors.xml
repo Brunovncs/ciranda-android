@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg">#0F1116</color>
-    <color name="accent">#6682FF</color>
+    <!-- The light palette; values-night has the dark one. The window shows this before the first frame is drawn. -->
+    <color name="bg">#F2F3F5</color>
+    <color name="accent">#0B2ECB</color>
 </resources>

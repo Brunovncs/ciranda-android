@@ -1,5 +1,9 @@
 package app.ciranda.android
 
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -8,17 +12,89 @@ import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** Where the app is, as the engine says it (`phase` in its state): the one place its words are read. */
+enum class Phase {
+    /** The engine has not spoken yet. */
+    Loading,
+    SignedOut,
+    SigningIn,
+    In,
+    ;
+
+    companion object {
+        fun parse(s: String) = when (s) {
+            "signedOut" -> SignedOut
+            "signingIn" -> SigningIn
+            "in" -> In
+            else -> Loading
+        }
+    }
+}
+
+/** How the voice call stands (`state` in its voice state). */
+enum class VoiceLink {
+    Joining,
+    Connected,
+    Reconnecting,
+    ;
+
+    companion object {
+        fun parse(s: String) = when (s) {
+            "joining" -> Joining
+            "connected" -> Connected
+            else -> Reconnecting
+        }
+    }
+}
+
+enum class Role {
+    Owner,
+    Admin,
+    Member,
+    ;
+
+    companion object {
+        fun parse(s: String) = when (s) {
+            "owner" -> Owner
+            "admin" -> Admin
+            else -> Member
+        }
+    }
+}
+
+/** A block of a message body, as `rust/src/engine/render.rs` names them (`t`). */
+enum class BlockKind {
+    Paragraph,
+    Heading,
+    Quote,
+    List,
+    Code,
+    ;
+
+    companion object {
+        fun parse(s: String) = when (s) {
+            "h" -> Heading
+            "q" -> Quote
+            "l" -> List
+            "code" -> Code
+            else -> Paragraph
+        }
+    }
+}
+
+@Immutable
 data class User(
     val id: Long,
     val nickname: String,
     val displayName: String?,
-    val role: String,
+    val role: Role,
     val avatarHash: String?,
 ) {
     val name: String get() = displayName?.takeIf { it.isNotBlank() } ?: nickname
-    val admin: Boolean get() = role == "owner" || role == "admin"
+    val admin: Boolean get() = role == Role.Owner || role == Role.Admin
 }
 
+@Immutable
 data class Channel(
     val id: Long,
     val kind: String,
@@ -31,8 +107,10 @@ data class Channel(
     val voice: Boolean get() = kind == "voice"
 }
 
+@Immutable
 data class Group(val id: Long, val name: String, val position: Long)
 
+@Immutable
 data class Member(
     val mid: Long,
     val userId: Long,
@@ -43,10 +121,13 @@ data class Member(
     val publishing: List<String>,
 )
 
+@Immutable
 data class Emoji(val name: String, val hash: String)
 
+@Immutable
 data class SavedServer(val url: String, val host: String, val username: String, val name: String, val signedIn: Boolean)
 
+@Immutable
 data class Settings(
     val noiseSuppression: Boolean = true,
     val neural: Boolean = true,
@@ -60,6 +141,7 @@ data class Settings(
     val language: String = "",
 )
 
+@Immutable
 data class SessionState(
     val url: String,
     val name: String,
@@ -81,8 +163,9 @@ data class SessionState(
     fun channel(id: Long?): Channel? = channels.firstOrNull { it.id == id }
 }
 
+@Immutable
 data class AppState(
-    val phase: String = "loading",
+    val phase: Phase = Phase.Loading,
     val signInError: String? = null,
     val needsServerPassword: Boolean = false,
     /** The sign-in under way was typed in the form (which stays on screen for it). */
@@ -105,10 +188,11 @@ data class AppState(
     val version: String = "",
 )
 
+@Immutable
 data class VoiceState(
     val channelId: Long,
     val channel: String?,
-    val state: String,
+    val state: VoiceLink,
     val muted: Boolean,
     val deafened: Boolean,
     val forceMuted: Boolean,
@@ -118,11 +202,14 @@ data class VoiceState(
     val volumes: Map<Long, Float>,
 )
 
+@Immutable
 data class Reaction(val emoji: String, val count: Int, val userIds: List<Long>)
 
+@Immutable
 data class Reply(val id: Long, val userId: Long?, val body: String, val attachmentName: String?)
 
 /** A span of a message body, as `rust/src/engine/render.rs` makes them. */
+@Immutable
 data class Span(
     val text: String? = null,
     val code: String? = null,
@@ -136,8 +223,10 @@ data class Span(
     val strike: Boolean = false,
 )
 
-data class TextBlock(val kind: String, val level: Int, val ordered: Boolean, val lines: List<List<Span>>, val code: String?)
+@Immutable
+data class TextBlock(val kind: BlockKind, val level: Int, val ordered: Boolean, val lines: List<List<Span>>, val code: String?)
 
+@Immutable
 data class Message(
     val id: Long,
     val channelId: Long,
@@ -158,6 +247,7 @@ data class Message(
     val mentionsMe: Boolean,
 )
 
+@Immutable
 data class ChatState(
     val channelId: Long,
     val messages: List<Message>,
@@ -198,6 +288,13 @@ sealed interface Event {
 object Engine {
     private val _state = MutableStateFlow(AppState())
     val state: StateFlow<AppState> = _state
+
+    /**
+     * The language chosen in the settings, as Compose state: what `tr` reads, so every text on
+     * screen is drawn again in the new language, not only the ones whose own inputs changed.
+     */
+    var language by mutableStateOf("")
+        private set
     private val _voice = MutableStateFlow<VoiceState?>(null)
     val voice: StateFlow<VoiceState?> = _voice
     private val _chat = MutableStateFlow<ChatState?>(null)
@@ -219,9 +316,13 @@ object Engine {
             return
         }
         when (o.optString("type")) {
-            "state" -> _state.value = parseState(o)
+            "state" -> {
+                val next = parseState(o)
+                _state.value = next
+                if (language != next.settings.language) language = next.settings.language
+            }
             "voice" -> _voice.value = o.optJSONObject("voice")?.let(::parseVoice)
-            "chat" -> _chat.value = parseChat(o)
+            "chat" -> _chat.value = parseChat(o, _chat.value)
             "toast" -> _events.tryEmit(Event.Toast(o.optString("text")))
             "picture" -> _events.tryEmit(Event.Picture(o.optString("hash"), o.str("path")))
             "needsPassword" -> _events.tryEmit(Event.NeedsPassword(o.optLong("channelId"), o.optBoolean("wrong")))
@@ -248,7 +349,7 @@ private inline fun <T> JSONArray?.list(f: (Int) -> T): List<T> = if (this == nul
 private fun JSONArray?.longs(): List<Long> = list { this!!.optLong(it) }
 
 private fun parseUser(o: JSONObject) = User(
-    o.optLong("id"), o.optString("nickname"), o.str("displayName"), o.optString("role", "member"), o.str("avatarHash"),
+    o.optLong("id"), o.optString("nickname"), o.str("displayName"), Role.parse(o.optString("role", "member")), o.str("avatarHash"),
 )
 
 private fun parseMember(o: JSONObject) = Member(
@@ -270,7 +371,7 @@ private fun parseState(o: JSONObject): AppState {
         st.optInt("micGain", 100), st.optInt("micSensitivity", 0), st.optInt("soundVolume", 100), st.optString("language"),
     )
     return AppState(
-        phase = o.optString("phase"),
+        phase = Phase.parse(o.optString("phase")),
         signInError = signIn.str("error"),
         needsServerPassword = signIn.optBoolean("serverPassword"),
         signInViaForm = signIn.optBoolean("viaForm"),
@@ -338,7 +439,7 @@ private fun parseVoice(o: JSONObject): VoiceState {
     return VoiceState(
         channelId = o.optLong("channelId"),
         channel = o.str("channel"),
-        state = o.optString("state"),
+        state = VoiceLink.parse(o.optString("state")),
         muted = o.optBoolean("muted"),
         deafened = o.optBoolean("deafened"),
         forceMuted = o.optBoolean("forceMuted"),
@@ -370,7 +471,7 @@ private fun parseMessage(o: JSONObject): Message {
             val l = b.optJSONArray("lines")!!.getJSONArray(j)
             l.list { k -> parseSpan(l.getJSONObject(k)) }
         }
-        TextBlock(b.optString("t"), b.optInt("level"), b.optBoolean("ordered"), lines, b.str("text"))
+        TextBlock(BlockKind.parse(b.optString("t")), b.optInt("level"), b.optBoolean("ordered"), lines, b.str("text"))
     }
     val reactions = o.optJSONArray("reactions").list { i ->
         val r = o.optJSONArray("reactions")!!.getJSONObject(i)
@@ -398,11 +499,20 @@ private fun parseMessage(o: JSONObject): Message {
     )
 }
 
-private fun parseChat(o: JSONObject): ChatState {
+/**
+ * A message that did not change since the last time is that same object, not an equal new one:
+ * the list then costs one identity check per row to be told nothing happened to it.
+ */
+private fun parseChat(o: JSONObject, before: ChatState?): ChatState {
     val a = o.optJSONArray("messages")
+    val channelId = o.optLong("channelId")
+    val known = if (before != null && before.channelId == channelId) before.messages.associateBy { it.id } else emptyMap()
     return ChatState(
-        channelId = o.optLong("channelId"),
-        messages = a.list { parseMessage(a!!.getJSONObject(it)) },
+        channelId = channelId,
+        messages = a.list {
+            val m = parseMessage(a!!.getJSONObject(it))
+            known[m.id]?.takeIf { old -> old == m } ?: m
+        },
         loaded = o.optBoolean("loaded"),
         moreBefore = o.optBoolean("moreBefore"),
         loadingOlder = o.optBoolean("loadingOlder"),

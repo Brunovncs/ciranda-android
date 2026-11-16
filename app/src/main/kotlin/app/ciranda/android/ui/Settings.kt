@@ -16,11 +16,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.NotificationsOff
@@ -28,6 +30,8 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -49,6 +53,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -66,12 +77,18 @@ fun SettingsScreen(activity: MainActivity, state: AppState, onClose: () -> Unit)
     val st = state.settings
     var changingPassword by remember { mutableStateOf(false) }
     Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(Modifier.fillMaxSize().background(p.bg).statusBarsPadding().navigationBarsPadding()) {
-            Row(Modifier.fillMaxWidth().background(p.surface).height(56.dp).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.fillMaxSize().background(p.bg)) {
+            // The same bar as the chat's: the surface runs up under the status bar, with a line below.
+            Row(
+                Modifier.fillMaxWidth().background(p.surface).statusBarsPadding().height(56.dp).bottomBorder(p.border).padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 IconButton(onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, tr("Back", "Voltar"), tint = p.text) }
-                Text(tr("Settings", "Configurações"), style = MaterialTheme.typography.titleMedium, color = p.text)
+                Text(tr("Settings", "Configurações"), style = MaterialTheme.typography.titleMedium, color = p.text, modifier = Modifier.semantics { heading() })
             }
-            Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
+            // Each section brings its own space above it, so the first needs none from the padding;
+            // the last scrolls clear of the navigation bar.
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
                 Notifications(activity)
                 Security(activity)
 
@@ -119,15 +136,9 @@ fun SettingsScreen(activity: MainActivity, state: AppState, onClose: () -> Unit)
                 Level(tr("Sounds volume", "Volume dos sons"), st.soundVolume, 0..200) { Engine.send("settings", "soundVolume" to it) }
 
                 Section(tr("Language", "Idioma"))
-                FlowRow(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     for ((code, name) in listOf("" to tr("System", "Sistema"), "pt" to "Português", "en" to "English")) {
-                        val on = st.language == code
-                        val shape = RoundedCornerShape(10.dp)
-                        if (on) {
-                            Button({}, shape = shape, modifier = Modifier.padding(end = 8.dp)) { Text(name) }
-                        } else {
-                            OutlinedButton({ Engine.send("settings", "language" to code) }, shape = shape, modifier = Modifier.padding(end = 8.dp)) { Text(name) }
-                        }
+                        Choice(name, st.language == code) { Engine.send("settings", "language" to code) }
                     }
                 }
 
@@ -200,12 +211,7 @@ private fun Security(activity: MainActivity) {
             for ((seconds, name) in listOf(
                 0 to tr("Right away", "Na hora"), 60 to "1 min", 300 to "5 min", 1800 to "30 min",
             )) {
-                val shape = RoundedCornerShape(10.dp)
-                if (after == seconds) {
-                    Button({}, shape = shape) { Text(name) }
-                } else {
-                    OutlinedButton({ Prefs.setLockAfter(seconds) }, shape = shape) { Text(name) }
-                }
+                Choice(name, after == seconds) { Prefs.setLockAfter(seconds) }
             }
         }
         Spacer(Modifier.height(8.dp))
@@ -241,34 +247,51 @@ private fun ChangePassword(onClose: () -> Unit) {
         else -> null
     }
     val ready = current.isNotEmpty() && next.length >= 6 && again == next && !busy
+    val submit = {
+        if (ready) {
+            busy = true
+            error = null
+            Engine.send("changePassword", "current" to current, "password" to next)
+        }
+    }
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
     AlertDialog(
         onDismissRequest = { if (!busy) onClose() },
         title = { Text(tr("Change password", "Trocar senha")) },
         text = {
             Column {
-                for ((value, set, label) in listOf(
+                val fields = listOf(
                     Triple(current, { v: String -> current = v }, tr("Current password", "Senha atual")),
                     Triple(next, { v: String -> next = v }, tr("New password", "Senha nova")),
                     Triple(again, { v: String -> again = v }, tr("New password again", "Senha nova de novo")),
-                )) {
+                )
+                for ((i, f) in fields.withIndex()) {
+                    val (value, set, label) = f
+                    val last = i == fields.lastIndex
                     androidx.compose.material3.OutlinedTextField(
-                        value, set, Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        value, set,
+                        Modifier.fillMaxWidth().padding(vertical = 4.dp).then(if (i == 0) Modifier.focusRequester(focus) else Modifier),
                         label = { Text(label) }, singleLine = true, enabled = !busy,
+                        isError = last && again.isNotEmpty() && again != next,
                         visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                         keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                             keyboardType = androidx.compose.ui.text.input.KeyboardType.Password,
+                            imeAction = if (last) androidx.compose.ui.text.input.ImeAction.Done else androidx.compose.ui.text.input.ImeAction.Next,
                         ),
+                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { submit() }),
                     )
                 }
-                (problem ?: error)?.let { Text(it, color = p.danger, style = MaterialTheme.typography.bodySmall) }
+                (problem ?: error)?.let {
+                    Text(
+                        it, color = p.danger, style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(top = 4.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                    )
+                }
             }
         },
         confirmButton = {
-            Button({
-                busy = true
-                error = null
-                Engine.send("changePassword", "current" to current, "password" to next)
-            }, enabled = ready) {
+            Button(submit, enabled = ready) {
                 if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Text(tr("Change", "Trocar"))
             }
         },
@@ -356,22 +379,26 @@ private fun UpdateCard(activity: MainActivity, state: AppState) {
 @Composable
 private fun Section(title: String) {
     val p = LocalPalette.current
-    Text(title, style = MaterialTheme.typography.titleSmall, color = p.accent, modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+    Text(
+        title, style = MaterialTheme.typography.titleSmall, color = p.accent,
+        modifier = Modifier.padding(top = 24.dp, bottom = 8.dp).semantics { heading() },
+    )
 }
 
 @Composable
 private fun Toggle(title: String, detail: String?, on: Boolean, enabled: Boolean = true, set: (Boolean) -> Unit) {
     val p = LocalPalette.current
+    // The row is the switch, as one thing to a screen reader and one target to a thumb.
     Row(
-        Modifier.fillMaxWidth().clickable(enabled = enabled) { set(!on) }.padding(vertical = 10.dp),
+        Modifier.fillMaxWidth().toggleable(on, enabled = enabled, role = Role.Switch, onValueChange = set).padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, color = p.text)
+            Text(title, color = if (enabled) p.text else p.muted)
             detail?.let { Text(it, color = p.muted, style = MaterialTheme.typography.bodySmall) }
         }
         Spacer(Modifier.width(12.dp))
-        Switch(on, set, enabled = enabled)
+        Switch(on, null, enabled = enabled)
     }
 }
 
@@ -387,6 +414,7 @@ private fun Level(title: String, value: Int, range: IntRange, label: (Int) -> St
         }
         Slider(
             drag ?: value.toFloat(), { drag = it },
+            Modifier.semantics { contentDescription = title },
             valueRange = range.first.toFloat()..range.last.toFloat(),
             onValueChangeFinished = { drag?.let { set(it.toInt()) }; drag = null },
         )
@@ -396,10 +424,24 @@ private fun Level(title: String, value: Int, range: IntRange, label: (Int) -> St
 @Composable
 private fun Action(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String, danger: Boolean = false, onClick: () -> Unit) {
     val p = LocalPalette.current
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick).padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null, tint = if (danger) p.danger else p.muted)
         Spacer(Modifier.width(14.dp))
         Text(text, color = if (danger) p.danger else p.text)
     }
     HorizontalDivider(color = p.border)
+}
+
+/** One of several to pick from (a language, how long away): the one picked marked, not only coloured. */
+@Composable
+private fun Choice(label: String, selected: Boolean, onClick: () -> Unit) {
+    val p = LocalPalette.current
+    FilterChip(
+        selected, onClick, label = { Text(label) },
+        leadingIcon = if (selected) ({ Icon(Icons.Filled.Check, null, Modifier.size(FilterChipDefaults.IconSize)) }) else null,
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = p.accent.copy(alpha = 0.18f), selectedLabelColor = p.text, selectedLeadingIconColor = p.accent,
+        ),
+        border = FilterChipDefaults.filterChipBorder(enabled = true, selected = selected, borderColor = p.border, selectedBorderColor = p.accent),
+    )
 }

@@ -160,6 +160,7 @@ object Updater {
         val total = c.contentLengthLong
         val digest = MessageDigest.getInstance("SHA-256")
         var got = 0L
+        var shownPercent = -1
         c.inputStream.use { input ->
             file.outputStream().use { out ->
                 val buf = ByteArray(64 * 1024)
@@ -169,7 +170,11 @@ object Updater {
                     out.write(buf, 0, n)
                     digest.update(buf, 0, n)
                     got += n
-                    if (total > 0) _state.value = State.Downloading(r, got.toFloat() / total)
+                    // A new state is a redraw of the banner and the settings card: one per percent, not per chunk.
+                    if (total > 0 && (got * 100 / total).toInt() != shownPercent) {
+                        shownPercent = (got * 100 / total).toInt()
+                        _state.value = State.Downloading(r, got.toFloat() / total)
+                    }
                 }
             }
         }

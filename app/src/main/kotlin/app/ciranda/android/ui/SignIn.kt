@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -40,16 +41,24 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import app.ciranda.android.AppState
 import app.ciranda.android.Engine
+import app.ciranda.android.Phase
 import app.ciranda.android.R
 
 @Composable
@@ -100,7 +109,7 @@ fun SignInScreen(state: AppState) {
             }
         }
     }
-    val busy = state.phase == "signingIn"
+    val busy = state.phase == Phase.SigningIn
     val submit = {
         Engine.send(
             "signIn", "server" to server, "serverPassword" to serverPassword, "nickname" to nickname,
@@ -116,7 +125,7 @@ fun SignInScreen(state: AppState) {
             Spacer(Modifier.height(24.dp))
             Image(painterResource(R.mipmap.ic_launcher), null, Modifier.size(84.dp))
             Spacer(Modifier.height(12.dp))
-            Text("Ciranda", style = MaterialTheme.typography.headlineMedium, color = p.text)
+            Text("Ciranda", style = MaterialTheme.typography.headlineMedium, color = p.text, modifier = Modifier.semantics { heading() })
             Text(
                 tr("Voice and chat for your group of friends.", "Voz e chat para o seu grupo de amigos."),
                 style = MaterialTheme.typography.bodyMedium, color = p.muted,
@@ -149,8 +158,8 @@ fun SignInScreen(state: AppState) {
                 )
                 for (s in saved) {
                     Row(
-                        Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(RoundedCornerShape(12.dp)).background(p.surface)
-                            .clickable(enabled = !busy) { Engine.send("resume", "url" to s.url, "username" to s.username) }
+                        Modifier.fillMaxWidth().padding(vertical = 3.dp).alpha(if (busy) 0.5f else 1f).clip(RoundedCornerShape(12.dp)).background(p.surface)
+                            .clickable(enabled = !busy, role = Role.Button) { Engine.send("resume", "url" to s.url, "username" to s.username) }
                             .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -175,7 +184,7 @@ fun SignInScreen(state: AppState) {
                 label = { Text(tr("Server address", "Endereço do servidor")) },
                 placeholder = { Text("bloquinho.duckdns.org:8444") },
                 singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
             )
             if (showServerPassword) {
                 Spacer(Modifier.height(8.dp))
@@ -196,18 +205,22 @@ fun SignInScreen(state: AppState) {
                 nickname, { nickname = it }, Modifier.fillMaxWidth(),
                 label = { Text(tr("Your name", "Seu nome")) },
                 singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                keyboardOptions = KeyboardOptions(autoCorrectEnabled = false, imeAction = ImeAction.Next),
             )
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 password, { password = it }, Modifier.fillMaxWidth().focusRequester(passwordFocus),
                 label = { Text(tr("Password", "Senha")) },
                 singleLine = true,
+                isError = state.wrongPassword && state.signInError != null && password.isEmpty(),
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
                 keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = { if (!busy) submit() }),
             )
-            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.fillMaxWidth().toggleable(register, role = Role.Switch) { register = it }.padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Column(Modifier.weight(1f)) {
                     Text(tr("Create an account", "Criar uma conta"), color = p.text)
                     Text(
@@ -215,7 +228,7 @@ fun SignInScreen(state: AppState) {
                         color = p.muted, style = MaterialTheme.typography.bodySmall,
                     )
                 }
-                Switch(register, { register = it })
+                Switch(register, null)
             }
             if (!register) {
                 TextButton({ forgot = true }, Modifier.fillMaxWidth()) {
@@ -223,12 +236,18 @@ fun SignInScreen(state: AppState) {
                 }
             }
             state.signInError?.let {
-                Text(it, color = p.danger, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp))
+                Text(
+                    it, color = p.danger, style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).semantics { liveRegion = LiveRegionMode.Polite },
+                )
             }
             Spacer(Modifier.height(8.dp))
-            Button(submit, Modifier.fillMaxWidth().height(50.dp), enabled = !busy, shape = RoundedCornerShape(12.dp)) {
+            Button({ if (!busy) submit() }, Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(12.dp)) {
                 if (busy) {
-                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = p.text)
+                    CircularProgressIndicator(
+                        Modifier.size(22.dp).semantics { contentDescription = tr("Signing in…", "Entrando…") },
+                        strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary,
+                    )
                 } else {
                     Text(if (register) tr("Create account", "Criar conta") else tr("Sign in", "Entrar"))
                 }

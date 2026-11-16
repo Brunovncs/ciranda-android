@@ -76,7 +76,7 @@ class VoiceService : Service() {
         val title = if (pt) "Em voz" else "In voice"
         val text = buildString {
             append(v?.channel ?: "")
-            if (v?.state == "reconnecting") append(if (pt) " · reconectando" else " · reconnecting")
+            if (v?.state == VoiceLink.Reconnecting) append(if (pt) " · reconectando" else " · reconnecting")
             if (muted) append(if (pt) " · microfone desligado" else " · muted")
         }
         val n = NotificationCompat.Builder(this, CirandaApp.CHANNEL_VOICE)

@@ -2,6 +2,11 @@ package app.ciranda.android.ui
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -35,6 +40,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,6 +54,7 @@ import app.ciranda.android.AppState
 import app.ciranda.android.Engine
 import app.ciranda.android.Event
 import app.ciranda.android.MainActivity
+import app.ciranda.android.Phase
 import app.ciranda.android.Prefs
 import app.ciranda.android.R
 import kotlinx.coroutines.delay
@@ -130,15 +137,34 @@ fun Root(activity: MainActivity) {
     }
 }
 
+/** Which of the three screens the app is on. Everything that decides it is read here, once. */
+private enum class Route { Server, SignIn, Connecting }
+
+private fun routeOf(state: AppState): Route = when {
+    state.phase == Phase.In && state.session != null -> Route.Server
+    state.phase == Phase.SignedOut -> Route.SignIn
+    // Typed in the form: the form stays, its button turning.
+    state.phase == Phase.SigningIn && (state.signInViaForm || state.saved.none { it.signedIn }) -> Route.SignIn
+    else -> Route.Connecting
+}
+
 @Composable
 private fun Screens(activity: MainActivity, state: AppState) {
-    val session = state.session
-    when {
-        state.phase == "in" && session != null -> ServerScreen(activity, state, session)
-        state.phase == "signedOut" -> SignInScreen(state)
-        // Typed in the form: the form stays, its button turning.
-        state.phase == "signingIn" && (state.signInViaForm || state.saved.none { it.signedIn }) -> SignInScreen(state)
-        else -> Connecting(state)
+    // The screen on its way out is drawn again with each new state while it fades; this keeps both
+    // it and the one coming in on the latest, whichever lambda the animation holds on to.
+    val latest = rememberUpdatedState(state)
+    AnimatedContent(
+        targetState = routeOf(state),
+        transitionSpec = { fadeIn(tween(180, delayMillis = 60)) togetherWith fadeOut(tween(90)) },
+        label = "route",
+    ) { route ->
+        val now = latest.value
+        when (route) {
+            // Signed out while fading: nothing left to show of the session, the next screen is coming.
+            Route.Server -> now.session?.let { ServerScreen(activity, now, it) }
+            Route.SignIn -> SignInScreen(now)
+            Route.Connecting -> Connecting(now)
+        }
     }
 }
 
@@ -155,7 +181,7 @@ private fun Connecting(state: AppState) {
     Box(Modifier.fillMaxSize().background(p.bg).systemBarsPadding(), contentAlignment = Alignment.Center) {
         Column(Modifier.widthIn(max = 420.dp).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             CircularProgressIndicator()
-            if (state.phase == "signingIn" && state.formServer.isNotEmpty()) {
+            if (state.phase == Phase.SigningIn && state.formServer.isNotEmpty()) {
                 Spacer(Modifier.height(16.dp))
                 Text(
                     if (state.signInRetrying) {

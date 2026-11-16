@@ -3,7 +3,10 @@ package app.ciranda.android
 import android.graphics.BitmapFactory
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
@@ -81,11 +84,15 @@ object Pictures {
         Engine.send("picture", "hash" to hash, "kind" to kind)
     }
 
-    /** The picture once it is here; asks for it the first time. */
+    /**
+     * The picture once it is here; asks for it the first time (and again if it was let go for room).
+     * Reading the map itself would draw every picture on screen again whenever any one arrives:
+     * the derived state is told only when this hash's own bitmap changes.
+     */
     @Composable
     fun get(hash: String?, kind: String = "picture"): ImageBitmap? {
         if (hash.isNullOrEmpty()) return null
-        val got = shown[hash]
+        val got by remember(hash) { derivedStateOf { shown[hash] } }
         if (got == null) LaunchedEffect(hash) { ask(hash, kind) }
         return got
     }
