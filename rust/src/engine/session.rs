@@ -1,6 +1,6 @@
-//! The server you are in: who is there, the channels and who is in each, and the chat open on
-//! screen. Fed by the socket and by HTTP replies, as the desktop's `session.rs` is; the private
-//! conversations are not here yet.
+//! The server you are in: who is there, the channels and who is in each, the private calls ringing
+//! or under way, and the chat open on screen. Fed by the socket and by HTTP replies, as the
+//! desktop's `session.rs` is; the private conversations are in `private`.
 
 use super::signin::Done;
 use super::{Engine, Handle};
@@ -214,6 +214,11 @@ pub struct Session {
     pub parked: bool,
     /// The private conversations, and this account's key for them.
     pub private: private::Private,
+    /// Private calls ringing for you, from you, or under way, and who is in each.
+    pub calls: HashMap<ConversationId, CallInfo>,
+    pub call_rosters: HashMap<ConversationId, Vec<Member>>,
+    /// How each private call ended ("ended", "missed", "declined"), for saying so.
+    pub call_outcomes: HashMap<ConversationId, String>,
 }
 
 impl Session {
@@ -248,6 +253,9 @@ impl Session {
             last_channel: None,
             parked: false,
             private,
+            calls: HashMap::new(),
+            call_rosters: HashMap::new(),
+            call_outcomes: HashMap::new(),
         };
         s.connect(handle);
         s.refresh_lists(handle);
@@ -362,6 +370,14 @@ impl Session {
 
     pub fn channel(&self, id: ChannelId) -> Option<&Channel> {
         self.channels.iter().find(|c| c.id == id)
+    }
+
+    /// Who is in a voice channel or a private call right now.
+    pub fn roster(&self, place: Place) -> Option<&Vec<Member>> {
+        match place {
+            Place::Channel(id) => self.rosters.get(&id),
+            Place::Call(id) => self.call_rosters.get(&id),
+        }
     }
 
     /// What the interface draws of the server, the chat aside.
@@ -692,7 +708,12 @@ impl Engine {
             realtime::Event::Up(snap) => {
                 let was_down = s.link == Link::Reconnecting && s.ever_up;
                 let first = !s.ever_up;
-                if let Some(snap) = snap {
+                let calls_before = s.calls.clone();
+                if let Some(mut snap) = snap {
+                    // Only a socket's hello has the calls: the REST snapshot never does.
+                    let calls = std::mem::take(&mut snap.calls);
+                    s.call_rosters = calls.iter().map(|c| (c.conversation_id, c.roster.clone())).collect();
+                    s.calls = calls.into_iter().map(|c| (c.conversation_id, c)).collect();
                     s.apply_snapshot(*snap);
                 }
                 s.link = Link::Up;
@@ -725,6 +746,7 @@ impl Engine {
                 if let Some(c) = self.call.as_mut() {
                     c.on_roster(self.session.as_ref(), &self.handle, None);
                 }
+                self.calls_reconciled(calls_before);
             }
             realtime::Event::Down => {
                 s.link = Link::Reconnecting;
@@ -776,7 +798,7 @@ impl Engine {
                 let id = v.get("channelId").and_then(Value::as_i64).unwrap_or(-1);
                 if let Some(roster) = list_of::<Member>(parse("roster")) {
                     s.rosters.insert(id, roster);
-                    if let Some(c) = self.call.as_mut().filter(|c| c.channel == id) {
+                    if let Some(c) = self.call.as_mut().filter(|c| c.place == Place::Channel(id)) {
                         c.on_roster(self.session.as_ref(), &self.handle, cues);
                         self.mark_voice();
                     }

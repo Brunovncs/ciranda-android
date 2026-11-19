@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.BatteryAlert
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -313,8 +314,8 @@ private fun Notifications(activity: MainActivity) {
     Toggle(
         tr("Mention notifications", "Notificações de menção"),
         tr(
-            "When someone writes @you, @everyone or @all, on any of your servers, while Ciranda is running.",
-            "Quando alguém escrever @você, @everyone ou @todos, em qualquer servidor seu, enquanto o Ciranda estiver rodando.",
+            "When someone writes @you, @everyone or @all, or calls you privately, on any of your servers, while Ciranda is running.",
+            "Quando alguém escrever @você, @everyone ou @todos, ou te ligar no privado, em qualquer servidor seu, enquanto o Ciranda estiver rodando.",
         ),
         notify,
     ) { Prefs.setNotify(it) }
@@ -336,6 +337,19 @@ private fun Notifications(activity: MainActivity) {
             activity.startActivity(
                 android.content.Intent(
                     android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    android.net.Uri.parse("package:${activity.packageName}"),
+                ),
+            )
+        }
+    }
+    // From Android 14 a call takes the whole screen (over the lock screen too) only if allowed;
+    // without it, it rings as a notification at the top.
+    val fullScreen = remember(resumed) { app.ciranda.android.Ringer.canTakeScreen(activity) }
+    if (!fullScreen && android.os.Build.VERSION.SDK_INT >= 34) {
+        Action(Icons.Filled.Call, tr("Show calls on the whole screen", "Mostrar chamadas na tela inteira")) {
+            activity.startActivity(
+                android.content.Intent(
+                    android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
                     android.net.Uri.parse("package:${activity.packageName}"),
                 ),
             )

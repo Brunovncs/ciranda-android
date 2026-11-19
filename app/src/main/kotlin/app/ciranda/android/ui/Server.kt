@@ -207,7 +207,7 @@ fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
                 }
             }
         }
-        VoiceBarHost(voice, onOpen = { sheet = Sheet.Voice })
+        VoiceBarHost(voice, onOpen = { if (voice.value?.private == true) activity.openCall() else sheet = Sheet.Voice })
         when {
             conversation != null -> PrivateComposer(activity, privates, s)
             channel != null && !channel.voice -> Composer(activity, s, Place(channel.id, false, channel.name))
@@ -251,7 +251,8 @@ fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
             )
         }
         Sheet.Voice -> ModalBottomSheet({ sheet = Sheet.None }, sheetState = sheetState, containerColor = p.surface) {
-            if (inVoice) VoiceSheet(voice, s, openProfile) else VoiceRooms(s, showRoom, openProfile)
+            // A private call has its own screen: the tab shows the rooms to go to instead.
+            if (inVoice && voice.value?.private != true) VoiceSheet(voice, s, openProfile) else VoiceRooms(s, showRoom, openProfile)
         }
         Sheet.Settings -> SettingsScreen(activity, state, privates, onClose = { sheet = Sheet.None })
         Sheet.None -> {}
@@ -521,10 +522,12 @@ private fun VoiceBar(v: VoiceState, onOpen: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            val (label, color) = when (v.state) {
-                VoiceLink.Connected -> tr("Voice connected", "Voz conectada") to p.success
-                VoiceLink.Joining -> tr("Joining…", "Entrando…") to p.warning
-                VoiceLink.Reconnecting -> tr("Reconnecting…", "Reconectando…") to p.warning
+            val (label, color) = when {
+                v.state == VoiceLink.Reconnecting -> tr("Reconnecting…", "Reconectando…") to p.warning
+                v.private && v.ringing -> tr("Calling…", "Chamando…") to p.warning
+                v.state == VoiceLink.Joining -> tr("Joining…", "Entrando…") to p.warning
+                v.private -> tr("In a call", "Em chamada") to p.success
+                else -> tr("Voice connected", "Voz conectada") to p.success
             }
             Text(label, color = color, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
             Text(
@@ -556,7 +559,7 @@ private fun VoiceBar(v: VoiceState, onOpen: () -> Unit) {
         IconButton({
             haptic.performHapticFeedback(HapticFeedbackType.Confirm)
             Engine.send("leave")
-        }) { Icon(Icons.Filled.CallEnd, tr("Leave", "Sair"), tint = p.danger) }
+        }) { Icon(Icons.Filled.CallEnd, if (v.private) tr("Hang up", "Desligar") else tr("Leave", "Sair"), tint = p.danger) }
     }
 }
 
@@ -566,7 +569,7 @@ private fun VoiceSheet(voice: State<VoiceState?>, s: SessionState, onProfile: (L
     val haptic = LocalHapticFeedback.current
     // The call may end under the sheet; its host closes the sheet a moment later.
     val v = voice.value ?: return
-    val roster = s.rosters[v.channelId].orEmpty()
+    val roster = v.roster
     val speakingLabel = tr("speaking", "falando")
     // Scrolls: in landscape, or with many people, the controls at the bottom stay reachable.
     Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 32.dp)) {

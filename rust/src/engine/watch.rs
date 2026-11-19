@@ -2,9 +2,12 @@
 //! in to gets a `private` socket, which the server tells of a mention (`mentions` in its health
 //! check) without counting you online; the server on screen gets one too once the app has been
 //! away long enough for its own socket to be put down (`Session::park`). What one hears becomes a
-//! notification for the interface to post.
+//! notification for the interface to post. A private call ringing for you is heard the same way
+//! (`calls`): the socket also keeps you reachable, so the server rings you at all.
 
 use super::Engine;
+use super::calls::Elsewhere;
+use super::session::Link;
 use crate::core::api::Api;
 use crate::core::realtime::{self, Realtime, Scope};
 use crate::core::settings::{SavedServer, same_server};
@@ -48,15 +51,18 @@ impl Engine {
         if self.phase == super::Phase::SigningIn {
             return;
         }
-        let awake = self.session.as_ref().filter(|s| !s.parked).map(|s| (s.api.base(), s.me.nickname.clone()));
+        // The server on screen, woken from the background, keeps the socket that listened for it
+        // until its own is up: a moment with no socket of yours there ends a call ringing for you.
+        let awake = self.session.as_ref().filter(|s| !s.parked).map(|s| (s.api.base(), s.me.nickname.clone(), s.link == Link::Up));
         let same = |url: &str, name: &str, s: &SavedServer| same_server(url, &s.url) && name.eq_ignore_ascii_case(&s.username);
+        let listening = |s: &SavedServer| self.watching.list.iter().any(|w| w.is(&s.url, &s.username));
         let wanted: Vec<SavedServer> = if self.notify {
             self.store
                 .values
                 .saved_servers
                 .iter()
                 .filter(|s| !s.session_token.is_empty())
-                .filter(|s| !awake.as_ref().is_some_and(|(u, n)| same(u, n, s)))
+                .filter(|s| !awake.as_ref().is_some_and(|(u, n, up)| same(u, n, s) && (*up || !listening(s))))
                 .filter(|s| !self.watching.skip.iter().any(|(u, n)| same(u, n, s)))
                 .cloned()
                 .collect()
@@ -124,6 +130,29 @@ impl Engine {
                 w.realtime.stop();
                 self.watching.skip.push((w.url, w.username));
             }
+            // The calls ringing for you there, or under way: one may have started, or ended, while
+            // the socket was down.
+            realtime::Event::Up(Some(snap)) => {
+                let w = &self.watching.list[at];
+                if self.asleep_here(&w.url, &w.username) {
+                    self.calls_heard(snap.calls);
+                    return;
+                }
+                let (url, username, name, names) = (w.url.clone(), w.username.clone(), w.name.clone(), w.names.clone());
+                let at = Elsewhere { url: &url, username: &username, server: &name, me: w.me, names: &names };
+                self.calls_elsewhere(&at, &snap.calls);
+            }
+            realtime::Event::Push(v) if v.get("type").and_then(Value::as_str) == Some("call:state") => {
+                let w = &self.watching.list[at];
+                if self.asleep_here(&w.url, &w.username) {
+                    self.on_call_push("call:state", &v);
+                    return;
+                }
+                let Ok(info) = serde_json::from_value::<CallInfo>(v.get("call").cloned().unwrap_or(Value::Null)) else { return };
+                let (url, username, name, names) = (w.url.clone(), w.username.clone(), w.name.clone(), w.names.clone());
+                let at = Elsewhere { url: &url, username: &username, server: &name, me: w.me, names: &names };
+                self.call_elsewhere(&at, info);
+            }
             realtime::Event::Push(v) if v.get("type").and_then(Value::as_str) == Some("mention") => {
                 let Ok(m) = serde_json::from_value::<Message>(v.get("message").cloned().unwrap_or(Value::Null)) else { return };
                 let channel = v.pointer("/channel/name").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -181,6 +210,26 @@ impl Engine {
             }
             _ => {}
         }
+    }
+
+    /// Whether this is the server on screen with its own socket down (put down while away, or not
+    /// back yet): what its background socket hears of calls is then the session's to know.
+    fn asleep_here(&self, url: &str, username: &str) -> bool {
+        self.session.as_ref().is_some_and(|s| {
+            same_server(&s.api.base(), url) && s.me.nickname.eq_ignore_ascii_case(username) && (s.parked || s.link != Link::Up)
+        })
+    }
+
+    /// A request on the background socket of a server, for a ring declined there.
+    pub(super) fn watch_request(
+        &self,
+        url: &str,
+        username: &str,
+        kind: &str,
+        payload: Value,
+    ) -> Option<impl Future<Output = Result<Value, realtime::RequestError>> + Send + use<>> {
+        let w = self.watching.list.iter().find(|w| w.is(url, username))?;
+        Some(w.realtime.request(kind, payload))
     }
 
     /// A message that calls you, for the interface to put in a notification.

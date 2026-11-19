@@ -5,6 +5,7 @@
 //! call and the open chat each when they changed, at most once per pass.
 
 mod call;
+mod calls;
 mod render;
 pub mod session;
 mod signin;
@@ -138,6 +139,10 @@ pub struct Engine {
     /// A private conversation to open once its server is on screen and its list has loaded: a
     /// notification's, from another server.
     pub pending_dm: Option<(String, String, ConversationId)>,
+    /// A private call ringing for you, on this server or one listened to in the background.
+    pub ring: Option<calls::Ring>,
+    /// A call answered before its server was up with it in hand.
+    answering: Option<calls::Answering>,
 }
 
 impl Engine {
@@ -172,6 +177,8 @@ impl Engine {
             notify: false,
             watching: watch::Watching::default(),
             pending_dm: None,
+            ring: None,
+            answering: None,
         };
         e.apply_audio_prefs();
         e
@@ -274,6 +281,7 @@ impl Engine {
                 "saved": saved,
             },
             "session": self.session.as_ref().map(Session::state),
+            "ring": self.ring.as_ref().map(|r| r.state(self.ring_answering())),
             "settings": settings,
             "version": env!("CARGO_PKG_VERSION"),
         })
@@ -298,7 +306,11 @@ impl Engine {
                 self.dirty.voice = true;
             }
         }
+        if n.is_multiple_of(20) {
+            self.ring_back();
+        }
         if n.is_multiple_of(10) {
+            self.try_answer();
             if self.retry.as_ref().is_some_and(|(at, _)| Instant::now() >= *at)
                 && let Some((_, form)) = self.retry.take()
             {
@@ -310,8 +322,11 @@ impl Engine {
                 s.retry_stale(&self.handle);
             }
             let away = self.away_since.is_some_and(|t| t.elapsed() >= PARK_AFTER);
+            // A call ringing or being picked up keeps the socket too.
             if away
                 && self.call.is_none()
+                && self.ring.is_none()
+                && self.answering.is_none()
                 && let Some(s) = self.session.as_mut().filter(|s| !s.parked)
             {
                 s.park();
@@ -476,7 +491,7 @@ impl Engine {
             "settings" => self.change_settings(&cmd),
             "changePassword" => self.change_password(text("current"), text("password")),
             other => {
-                if !self.private_command(other, &cmd) {
+                if !self.private_command(other, &cmd) && !self.call_command(other, &cmd) {
                     log::warn!("unknown command {other:?}");
                 }
                 // Whatever it did may show in the conversation on screen.
@@ -725,7 +740,7 @@ impl Engine {
                     s.last_channel = last;
                     // Started with nothing on screen (at boot, for the notifications): not online
                     // there until the app is opened.
-                    if !e.visible && e.call.is_none() {
+                    if !e.visible && e.call.is_none() && e.answering.is_none() {
                         s.park();
                     }
                     e.session = Some(s);
@@ -845,17 +860,23 @@ impl Engine {
     }
 
     fn join_as(&mut self, channel: ChannelId, password: Option<String>, muted: bool, deafened: bool) {
-        if self.call.as_ref().is_some_and(|c| c.channel == channel && !c.left) {
+        if self.call.as_ref().is_some_and(|c| c.place == Place::Channel(channel) && !c.left) {
             return;
         }
         self.leave();
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let v = &self.store.values;
-        *call::volumes().lock() = v.voice_volumes_on(&session.api.base());
-        let mut c = Call::new(channel, password, muted, deafened);
+        let mut c = Call::new(Place::Channel(channel), password, None, muted, deafened);
         c.send_join(session, &self.handle);
+        self.begin_call(c);
+    }
+
+    /// Makes `c` the call in progress, for the interface (and its service) too.
+    fn begin_call(&mut self, c: Call) {
+        if let Some(s) = self.session.as_ref() {
+            *call::volumes().lock() = self.store.values.voice_volumes_on(&s.api.base());
+        }
         self.call = Some(c);
         self.apply_audio_prefs();
         self.mark_voice();

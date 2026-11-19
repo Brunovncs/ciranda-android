@@ -415,8 +415,8 @@ fun ProfileSheet(
                 Text(tr("Send a message", "Mandar mensagem"))
             }
         }
-        // In your call: how loud you hear them, as in the call's own sheet.
-        if (!me && v != null && room?.id == v.channelId) {
+        // In your call, a channel's or a private one: how loud you hear them, as in the call's own sheet.
+        if (!me && v != null && ((room != null && room.id == v.channelId) || v.peer == u.id)) {
             val vol = v.volumes[u.id] ?: 1f
             var drag by remember(u.id) { mutableStateOf<Float?>(null) }
             val said = tr("Volume of ${u.name}", "Volume de ${u.name}")

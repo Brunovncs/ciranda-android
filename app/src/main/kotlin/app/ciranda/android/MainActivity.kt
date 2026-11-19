@@ -98,6 +98,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onStart() {
         super.onStart()
+        Ringer.screenStarted()
         CirandaApp.visible = true
         Engine.send("visible", "on" to true)
         AppLock.onStart()
@@ -127,6 +128,7 @@ class MainActivity : FragmentActivity() {
         if (Engine.voice.value != null) confirmLeave.value = go else go()
     }
 
+
     /** With the lock on, the app's picture in the recent apps is blank too. */
     fun applyPrivacy() {
         if (Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(!Prefs.lock.value)
@@ -150,6 +152,7 @@ class MainActivity : FragmentActivity() {
         AppLock.onStop(isChangingConfigurations)
         CirandaApp.visible = false
         Engine.send("visible", "on" to false)
+        Ringer.screenStopped()
         super.onStop()
     }
 
@@ -290,6 +293,17 @@ class MainActivity : FragmentActivity() {
             if (password == null) Engine.send("join", "channelId" to channelId) else Engine.send("join", "channelId" to channelId, "password" to password)
         }
     }
+
+    /** Rings the other person of a private conversation, on the call screen. */
+    fun call(conversationId: Long) {
+        withMic {
+            Engine.send("callDial", "conversationId" to conversationId)
+            openCall()
+        }
+    }
+
+    /** The call screen, for the private call under way. */
+    fun openCall() = startActivity(CallActivity.intent(this))
 
     fun pickAttachment(channelId: Long, body: String, private: Boolean = false) {
         uploadTo = channelId

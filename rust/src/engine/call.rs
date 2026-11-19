@@ -1,7 +1,8 @@
-//! Being in a voice channel: the desktop's `media/call.rs` and `media/voice.rs` in one, sound
-//! only. Joining and leaving through the socket, keeping the media tokens fresh, mute and deafen,
-//! your microphone published to your slot's `v` path over WHIP, and one WHEP subscription to
-//! everyone else's, each playing through its own source in the mix at that person's volume.
+//! Being in a call, a voice channel or a private one: the desktop's `media/call.rs` and
+//! `media/voice.rs` in one, sound only. Joining and leaving through the socket, keeping the media
+//! tokens fresh, mute and deafen, your microphone published to your slot's `v` path over WHIP, and
+//! one WHEP subscription to everyone else's, each playing through its own source in the mix at that
+//! person's volume. A private call's frames are sealed both ways with its key (`rtc::FrameKey`).
 //! Every async setup carries a generation, so a stale completion hangs up instead of attaching;
 //! failures back off 1, 2, 4, 8 s; a subscription that goes quiet is replaced.
 
@@ -10,7 +11,7 @@ use super::{Engine, Handle};
 use crate::core::api::ApiError;
 use crate::core::types::*;
 use crate::media::audio::{self, Cue, MicGuard, Source, SourceKind};
-use crate::media::rtc::{self, Link, Track};
+use crate::media::rtc::{self, FrameKey, Link, Track};
 use futures::StreamExt;
 use libwebrtc::audio_source::AudioSourceOptions;
 use libwebrtc::audio_source::native::NativeAudioSource;
@@ -21,7 +22,7 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How long a new connection gets to come up before it counts as failed.
 const CONNECT_LIMIT: Duration = Duration::from_secs(10);
@@ -57,6 +58,11 @@ static AUDIO_STARTED: AtomicBool = AtomicBool::new(false);
 fn audio_engine() -> &'static audio::Audio {
     AUDIO_STARTED.store(true, Ordering::Relaxed);
     audio::audio()
+}
+
+/// Starts the audio engine for something a call plays before it is joined (the ring back).
+pub fn start_audio() {
+    audio_engine();
 }
 
 /// The audio engine if a call has started it; nothing is opened just to set it.
@@ -212,7 +218,13 @@ pub enum CallState {
 pub struct Call {
     /// Unique to this call, so a late answer for an earlier one is dropped.
     pub id: u64,
-    pub channel: ChannelId,
+    pub place: Place,
+    /// A private call's media key; none in a voice channel.
+    pub key: Option<FrameKey>,
+    /// Who a private call is with.
+    pub peer: Option<UserId>,
+    /// When a private call was answered, by this phone's clock, for its timer.
+    pub since: Option<SystemTime>,
     pub state: CallState,
     tokens: Option<VoiceTokens>,
     refresh_at: Option<Instant>,
@@ -244,10 +256,13 @@ pub struct Call {
 }
 
 impl Call {
-    pub fn new(channel: ChannelId, password: Option<String>, muted: bool, deafened: bool) -> Call {
+    pub fn new(place: Place, password: Option<String>, key: Option<[u8; 32]>, muted: bool, deafened: bool) -> Call {
         Call {
             id: next_generation(),
-            channel,
+            place,
+            key: key.as_ref().map(FrameKey::new),
+            peer: None,
+            since: None,
             state: CallState::Joining,
             tokens: None,
             refresh_at: None,
@@ -277,7 +292,20 @@ impl Call {
     }
 
     fn place(&self) -> Place {
-        Place::Channel(self.channel)
+        self.place
+    }
+
+    pub fn channel(&self) -> Option<ChannelId> {
+        self.place.channel()
+    }
+
+    pub fn conversation(&self) -> Option<ConversationId> {
+        self.place.conversation()
+    }
+
+    /// The first join was answered: the media is there, or on its way.
+    pub fn joined_once(&self) -> bool {
+        self.started
     }
 
     /// What the interface draws of the call.
@@ -285,9 +313,29 @@ impl Call {
         let me = session.map(|s| s.me.id);
         let volumes: serde_json::Map<String, Value> =
             self.roster.iter().filter(|m| Some(m.user_id) != me).map(|m| (m.user_id.to_string(), json!(volume_of(m.user_id)))).collect();
+        let conversation = self.conversation();
+        let peer = self.peer.or_else(|| session?.private.peer_of(conversation?));
+        let peer_name = session.map(|s| s.display_name(peer, None));
+        let name = match (self.place, &peer_name) {
+            (Place::Channel(id), _) => session.and_then(|s| s.channel(id)).map(|c| c.name.clone()),
+            (Place::Call(_), Some(n)) => Some(trf!("Call with {}", "Chamada com {}", n)),
+            (Place::Call(_), None) => None,
+        };
+        // Ringing the other person: a call being answered here is past that.
+        let ringing = conversation.is_some_and(|id| {
+            session.and_then(|s| s.calls.get(&id)).is_some_and(|c| c.state == CallPhase::Ringing && Some(c.caller_id) == me)
+        });
+        let since = self.since.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64);
         json!({
-            "channelId": self.channel,
-            "channel": session.and_then(|s| s.channel(self.channel)).map(|c| c.name.clone()),
+            "channelId": self.channel(),
+            "conversationId": conversation,
+            "peer": peer,
+            "peerName": peer.and(peer_name),
+            "peerAvatar": peer.and_then(|p| session?.users.get(&p)?.avatar_hash.clone()),
+            "ringing": ringing,
+            "since": since,
+            "roster": self.roster,
+            "channel": name,
             "state": match self.state {
                 CallState::Joining => "joining",
                 CallState::Connected => "connected",
@@ -304,11 +352,15 @@ impl Call {
     }
 
     pub fn send_join(&mut self, session: &Session, handle: &Handle) {
-        let mut payload = json!({ "channelId": self.channel, "muted": self.muted, "deafened": self.deafened });
+        let kind = match self.place {
+            Place::Channel(_) => "voice:join",
+            Place::Call(_) => "call:join",
+        };
+        let mut payload = self.place.with(json!({ "muted": self.muted, "deafened": self.deafened }));
         if let Some(p) = &self.password {
             payload["password"] = json!(p);
         }
-        let reply = session.request("voice:join", payload);
+        let reply = session.request(kind, payload);
         let id = self.id;
         let h = handle.clone();
         crate::core::runtime().spawn(async move {
@@ -365,7 +417,7 @@ impl Call {
 
     pub fn on_roster(&mut self, session: Option<&Session>, handle: &Handle, cues: Option<f32>) {
         let Some(s) = session else { return };
-        let roster = s.rosters.get(&self.channel).cloned().unwrap_or_default();
+        let roster = s.roster(self.place).cloned().unwrap_or_default();
         let me = s.me.id;
         if let Some(mine) = roster.iter().find(|m| m.user_id == me) {
             self.mid = Some(mine.mid);
@@ -435,13 +487,14 @@ impl Call {
         let source = peer.source.clone();
         let api = s.api.clone();
         let ice = s.ice_servers.clone();
+        let key = self.key.clone();
         let id = self.id;
         let h = handle.clone();
         crate::core::runtime().spawn(async move {
             tokio::time::sleep(after).await;
             let pumps: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> = Default::default();
             let slot = pumps.clone();
-            let link = rtc::watch(&api, &url, &ice, false, None, move |track| {
+            let link = rtc::watch(&api, &url, &ice, false, key.as_ref(), move |track| {
                 if let Track::Audio(a) = track {
                     let src = source.clone();
                     slot.lock().push(crate::core::runtime().spawn(async move {
@@ -486,11 +539,12 @@ impl Call {
         let track = rtc::factory().create_audio_track("mic", source.clone());
         let api = s.api.clone();
         let ice = s.ice_servers.clone();
+        let key = self.key.clone();
         let mid = self.mid;
         let id = self.id;
         let h = handle.clone();
         crate::core::runtime().spawn(async move {
-            let link = match rtc::publish(&api, &url, &ice, Some((track, 32_000)), None, None).await {
+            let link = match rtc::publish(&api, &url, &ice, Some((track, 32_000)), None, key.as_ref()).await {
                 Ok(link) if link.connected(CONNECT_LIMIT).await => Ok(link),
                 Ok(_) => Err(not_connected()),
                 Err(e) => Err(e),
@@ -776,7 +830,11 @@ impl Call {
         if let Some(s) = session
             && !told
         {
-            let reply = s.request("voice:leave", self.place().payload());
+            // Leaving a private call ends it for both: one person on their own is not a call.
+            let reply = match self.place {
+                Place::Channel(_) => s.request("voice:leave", self.place.payload()),
+                Place::Call(_) => s.request("call:hang-up", self.place.payload()),
+            };
             crate::core::runtime().spawn(async move {
                 if let Err(e) = reply.await {
                     log::info!("leaving: {e}");
@@ -810,7 +868,7 @@ fn roster_cues(before: &[Member], now: &[Member], me: UserId) -> Vec<Cue> {
 }
 
 impl Engine {
-    /// The answer to `voice:join`.
+    /// The answer to `voice:join` or `call:join`.
     pub(super) fn joined(&mut self, id: u64, reply: Result<Value, crate::core::realtime::RequestError>) {
         let cues = self.voice_sounds();
         let Some(c) = self.call.as_mut().filter(|c| c.id == id) else {
@@ -823,8 +881,15 @@ impl Engine {
                 if let Some(roster) = v.get("roster").and_then(|r| serde_json::from_value::<Vec<Member>>(r.clone()).ok())
                     && let Some(s) = self.session.as_mut()
                 {
-                    s.rosters.insert(c.channel, roster);
-                    s.unlocked.insert(c.channel);
+                    match c.place {
+                        Place::Channel(channel) => {
+                            s.rosters.insert(channel, roster);
+                            s.unlocked.insert(channel);
+                        }
+                        Place::Call(conversation) => {
+                            s.call_rosters.insert(conversation, roster);
+                        }
+                    }
                 }
                 let first = c.tokens.is_none();
                 if first {
@@ -846,7 +911,7 @@ impl Engine {
                 if let Some(mine) = self
                     .session
                     .as_ref()
-                    .and_then(|s| s.rosters.get(&c.channel).and_then(|r| r.iter().find(|m| m.user_id == s.me.id)).map(|m| m.mid))
+                    .and_then(|s| s.roster(c.place).and_then(|r| r.iter().find(|m| m.user_id == s.me.id)).map(|m| m.mid))
                     && c.mic.is_some()
                     && c.mid != Some(mine)
                 {
@@ -867,9 +932,13 @@ impl Engine {
                     self.mark_voice();
                     return;
                 }
-                c.left = true;
-                let channel = c.channel;
+                // A private call refused for anything but being over is hung up, or the other
+                // person would go on waiting for this one.
+                let over = matches!(err.code, ErrorCode::NoSuchCall | ErrorCode::NotAnswered);
+                c.left = c.place.channel().is_some() || over;
+                let channel = c.channel();
                 let why = match err.code {
+                    _ if over => Some(tr!("The call has ended.", "A chamada terminou.").into()),
                     ErrorCode::PasswordRequired | ErrorCode::BadPassword => {
                         self.send(json!({ "type": "needsPassword", "channelId": channel, "wrong": err.code == ErrorCode::BadPassword }));
                         None

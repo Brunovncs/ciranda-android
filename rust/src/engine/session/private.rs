@@ -1,7 +1,7 @@
 //! Private conversations, as the desktop's `session/private.rs` keeps them, without GPUI: the key
 //! state and the conversation list kept current, what arrives opened, what goes out sealed. The
 //! cryptography is the desktop's own `core::crypto`, the bookkeeping of keys its `dm::Vault`.
-//! Private calls are left out: their lines in a conversation show, nothing rings.
+//! Private calls ring and are answered in `engine::calls`.
 
 use super::{ChatLog, LogOp, PICTURES, Session, list_of};
 use crate::core::api::{Api, ApiError, Sealed};
@@ -113,7 +113,7 @@ type SealWith = Arc<dyn Fn(&mut Vault) -> Result<Sealed, SealError> + Send + Syn
 type SendWith<T> = Arc<dyn Fn(Api, Sealed) -> BoxFuture<'static, Result<T, ApiError>> + Send + Sync>;
 type Done<T> = Box<dyn FnOnce(&mut Engine, Result<T, ApiError>) + Send>;
 
-fn seal_failed(e: SealError) -> ApiError {
+pub(crate) fn seal_failed(e: SealError) -> ApiError {
     let code = e.code();
     let message = e.message().map(str::to_string).or_else(|| crate::core::api::friendly(code, &Value::Null)).unwrap_or_default();
     ApiError { status: 0, code, message, body: Value::Null }
@@ -1060,9 +1060,10 @@ impl Engine {
                     s.private.blocked = list.into_iter().collect();
                 }
             }
-            // Private calls aren't on the phone yet: their lines show in the conversation, and a
-            // ring is left to the computer.
-            "call:state" | "call:roster" => return true,
+            "call:state" | "call:roster" => {
+                self.on_call_push(kind, v);
+                return true;
+            }
             _ => return false,
         }
         self.mark();

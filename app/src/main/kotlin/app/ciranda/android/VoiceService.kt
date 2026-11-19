@@ -18,8 +18,9 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
- * Keeps a voice call going with the screen off or another app in front: a foreground service
- * with the microphone, a wake lock and a Wi-Fi lock, and a notification to mute or leave.
+ * Keeps a voice call going with the screen off or another app in front, in a channel or a private
+ * call: a foreground service with the microphone, a wake lock and a Wi-Fi lock, and a notification
+ * to mute or leave (hang up, in a private call, with how long it has lasted).
  */
 class VoiceService : Service() {
     private var wake: PowerManager.WakeLock? = null
@@ -48,7 +49,7 @@ class VoiceService : Service() {
                     if (!seen) stopSelf()
                 }
                 Engine.voice
-                    .map { v -> v?.let { Triple(it.channel, it.state, it.muted) } }
+                    .map { v -> v?.let { listOf(it.channel, it.state, it.muted, it.ringing, it.since) } }
                     .distinctUntilChanged()
                     .collect { shown ->
                         if (shown == null) {
@@ -66,19 +67,31 @@ class VoiceService : Service() {
 
     private fun show(v: VoiceState?) {
         val pt = Locale.getDefault().language == "pt"
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), PendingIntent.FLAG_IMMUTABLE,
-        )
+        val private = v?.private == true
+        // A private call opens its own screen; a channel, the app.
+        val open = if (private) {
+            PendingIntent.getActivity(this, 0, CallActivity.intent(this), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        } else {
+            PendingIntent.getActivity(
+                this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+        }
         fun action(what: String) = PendingIntent.getBroadcast(
             this, what.hashCode(), Intent(this, Actions::class.java).setAction(what), PendingIntent.FLAG_IMMUTABLE,
         )
         val muted = v?.muted == true
-        val title = if (pt) "Em voz" else "In voice"
+        val title = when {
+            !private -> if (pt) "Em voz" else "In voice"
+            v.ringing -> if (pt) "Chamando…" else "Calling…"
+            else -> if (pt) "Em chamada" else "In a call"
+        }
         val text = buildString {
-            append(v?.channel ?: "")
+            append((if (private) v.peerName else v?.channel) ?: "")
             if (v?.state == VoiceLink.Reconnecting) append(if (pt) " · reconectando" else " · reconnecting")
             if (muted) append(if (pt) " · microfone desligado" else " · muted")
         }
+        val since = v?.since
         val n = NotificationCompat.Builder(this, CirandaApp.CHANNEL_VOICE)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
@@ -87,8 +100,9 @@ class VoiceService : Service() {
             .setSilent(true)
             .setContentIntent(open)
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            .apply { if (private && since != null) setWhen(since).setShowWhen(true).setUsesChronometer(true) }
             .addAction(0, if (muted) (if (pt) "Ativar microfone" else "Unmute") else (if (pt) "Mutar" else "Mute"), action(if (muted) UNMUTE else MUTE))
-            .addAction(0, if (pt) "Sair" else "Leave", action(LEAVE))
+            .addAction(0, if (private) (if (pt) "Desligar" else "Hang up") else (if (pt) "Sair" else "Leave"), action(LEAVE))
             .build()
         ServiceCompat.startForeground(this, 1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
     }

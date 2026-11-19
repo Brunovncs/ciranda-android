@@ -13,6 +13,10 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- A private call ringing: over the lock screen, and the phone vibrating. From Android 14 the
+         full screen needs the person's say (Settings, Notifications); without it, a heads-up. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Saving a picture to the gallery; from Android 10 the gallery takes it without asking. -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
@@ -42,6 +46,16 @@
             </intent-filter>
         </activity>
 
+        <!-- A private call: its own task, kept out of the recent apps, over the lock screen. -->
+        <activity
+            android:name=".CallActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:taskAffinity="app.ciranda.android.call"
+            android:turnScreenOn="true" />
+
         <service
             android:name=".VoiceService"
             android:exported="false"
@@ -49,6 +63,10 @@
 
         <receiver
             android:name=".VoiceService$Actions"
+            android:exported="false" />
+
+        <receiver
+            android:name=".Ringer$Decline"
             android:exported="false" />
 
         <provider

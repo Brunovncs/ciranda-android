@@ -1,8 +1,11 @@
 package app.ciranda.android
 
 import android.app.Application
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -20,6 +23,7 @@ class CirandaApp : Application() {
         const val CHANNEL_MESSAGES = "messages"
         const val CHANNEL_UPDATES = "updates"
         const val CHANNEL_PRIVATE = "private"
+        const val CHANNEL_CALLS = "calls"
 
         /** Whether an activity of ours is on screen. */
         @Volatile
@@ -47,6 +51,7 @@ class CirandaApp : Application() {
                     is Event.InCall -> if (e.on) VoiceService.start(this@CirandaApp)
                     is Event.Mention -> Notifier.show(this@CirandaApp, e)
                     is Event.PrivateMessage -> Notifier.showPrivate(this@CirandaApp, e)
+                    is Event.MissedCall -> Ringer.missed(this@CirandaApp, e)
                     else -> {}
                 }
             }
@@ -54,6 +59,7 @@ class CirandaApp : Application() {
         scope.launch {
             Prefs.notify.collect { on -> Engine.send("notifications", "on" to on) }
         }
+        Ringer.start(this)
         Updater.start(this)
     }
 
@@ -71,6 +77,21 @@ class CirandaApp : Application() {
         )
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_PRIVATE, if (pt) "Mensagens privadas" else "Private messages", NotificationManager.IMPORTANCE_HIGH),
+        )
+        // Rings with the phone's ringtone, as a call does, and vibrates.
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_CALLS, if (pt) "Chamadas" else "Calls", NotificationManager.IMPORTANCE_HIGH).apply {
+                setSound(
+                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 800, 1200)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            },
         )
         nm.deleteNotificationChannel("connection")
     }

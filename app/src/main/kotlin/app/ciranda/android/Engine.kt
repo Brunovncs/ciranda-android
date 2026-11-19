@@ -215,6 +215,20 @@ data class SessionState(
     fun channel(id: Long?): Channel? = channels.firstOrNull { it.id == id }
 }
 
+/** A private call ringing for you, on the server on screen or one listened to in the background. */
+@Immutable
+data class Ring(
+    val server: String,
+    val username: String,
+    val serverName: String,
+    val conversationId: Long,
+    val callerId: Long,
+    val name: String,
+    val avatar: String?,
+    /** Answered, and on its way: its server signing in, or waking. */
+    val answering: Boolean,
+)
+
 @Immutable
 data class AppState(
     val phase: Phase = Phase.Loading,
@@ -236,13 +250,26 @@ data class AppState(
     val formSeq: Long = 0,
     val saved: List<SavedServer> = emptyList(),
     val session: SessionState? = null,
+    val ring: Ring? = null,
     val settings: Settings = Settings(),
     val version: String = "",
 )
 
+/** The call in progress: a voice channel's (`channelId`), or a private one (`conversationId`). */
 @Immutable
 data class VoiceState(
-    val channelId: Long,
+    val channelId: Long?,
+    val conversationId: Long?,
+    /** Who a private call is with. */
+    val peer: Long?,
+    val peerName: String?,
+    val peerAvatar: String?,
+    /** A private call you made, not answered yet. */
+    val ringing: Boolean,
+    /** When a private call was answered, in this phone's milliseconds, for its timer. */
+    val since: Long?,
+    val roster: List<Member>,
+    /** The channel's name, or "Chamada com Ana". */
     val channel: String?,
     val state: VoiceLink,
     val muted: Boolean,
@@ -252,7 +279,9 @@ data class VoiceState(
     val pingMs: Int?,
     val micFailed: Boolean,
     val volumes: Map<Long, Float>,
-)
+) {
+    val private: Boolean get() = conversationId != null
+}
 
 @Immutable
 data class Reaction(val emoji: String, val count: Int, val userIds: List<Long>)
@@ -361,6 +390,9 @@ sealed interface Event {
     data class RecoveryKey(val key: String?) : Event
 
     data class SafetyNumber(val userId: Long, val number: String?, val verified: Boolean) : Event
+
+    /** A private call that rang while away and nobody picked up, for a notification. */
+    data class MissedCall(val server: String, val username: String, val serverName: String, val conversationId: Long, val author: String) : Event
 }
 
 /** The app's state as the Rust engine last said it, and its one-off events. */
@@ -424,6 +456,9 @@ object Engine {
             "inviteLink" -> _events.tryEmit(Event.InviteLink(o.optString("link"), o.optString("name")))
             "sendFailed" -> _events.tryEmit(Event.SendFailed(o.optLong("channelId"), o.optString("body"), o.optBoolean("private")))
             "uploading" -> _events.tryEmit(Event.Uploading(o.optBoolean("on")))
+            "missedCall" -> _events.tryEmit(
+                Event.MissedCall(o.optString("server"), o.optString("username"), o.optString("serverName"), o.optLong("conversationId"), o.optString("author")),
+            )
             "mention" -> _events.tryEmit(
                 Event.Mention(
                     o.optString("server"), o.optString("username"), o.optString("serverName"), o.optLong("channelId"),
@@ -477,6 +512,12 @@ private fun parseState(o: JSONObject): AppState {
         formSeq = form.optLong("seq"),
         saved = saved,
         session = o.optJSONObject("session")?.let(::parseSession),
+        ring = o.optJSONObject("ring")?.let { r ->
+            Ring(
+                r.optString("server"), r.optString("username"), r.optString("serverName"), r.optLong("conversationId"),
+                r.optLong("callerId"), r.optString("name"), r.str("avatar"), r.optBoolean("answering"),
+            )
+        },
         settings = settings,
         version = o.optString("version"),
     )
@@ -528,8 +569,16 @@ private fun parseSession(o: JSONObject): SessionState {
 private fun parseVoice(o: JSONObject): VoiceState {
     val volumes = mutableMapOf<Long, Float>()
     o.optJSONObject("volumes")?.let { v -> for (k in v.keys()) volumes[k.toLong()] = v.optDouble(k, 1.0).toFloat() }
+    val roster = o.optJSONArray("roster")
     return VoiceState(
-        channelId = o.optLong("channelId"),
+        channelId = o.long("channelId"),
+        conversationId = o.long("conversationId"),
+        peer = o.long("peer"),
+        peerName = o.str("peerName"),
+        peerAvatar = o.str("peerAvatar"),
+        ringing = o.optBoolean("ringing"),
+        since = o.long("since"),
+        roster = roster.list { parseMember(roster!!.getJSONObject(it)) },
         channel = o.str("channel"),
         state = VoiceLink.parse(o.optString("state")),
         muted = o.optBoolean("muted"),

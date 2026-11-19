@@ -30,6 +30,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
@@ -251,6 +252,14 @@ fun PrivateTopBar(privates: Privates, s: SessionState, onProfile: (Long) -> Unit
                         color = if (open.verified) p.success else p.muted, style = MaterialTheme.typography.labelSmall,
                     )
                 }
+            }
+        }
+        // A call needs their key, as a message does; one already with them just shows again.
+        val voice by Engine.voice.collectAsState()
+        val inThisCall = voice?.conversationId == open.id
+        if (inThisCall || (open.peerHasKey && !open.blocked && s.private.state == KeyState.Ready)) {
+            IconButton({ if (inThisCall) privates.activity.openCall() else privates.activity.call(open.id) }) {
+                Icon(Icons.Filled.Call, if (inThisCall) tr("Back to the call", "Voltar para a chamada") else tr("Call $name", "Ligar para $name"), tint = if (inThisCall) p.success else p.text)
             }
         }
         Box {
