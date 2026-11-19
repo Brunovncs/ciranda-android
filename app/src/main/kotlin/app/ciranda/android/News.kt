@@ -16,6 +16,33 @@ import java.time.LocalDate
 object News {
     val ENTRIES: List<Entry> = listOf(
         Entry(
+            "0.4.0", "2026-11-19",
+            new(
+                "Private messages, encrypted end to end and the same as on the computer: tap someone, then Send a message. Only the two of you can read them.",
+                "Mensagens privadas com criptografia de ponta a ponta, as mesmas do computador: toque em alguém e em Mandar mensagem. Só vocês dois conseguem ler.",
+            ),
+            new(
+                "A bar at the bottom with the server, the channels, the people, voice and settings. Tap the server's picture to switch servers.",
+                "Uma barra embaixo com o servidor, os canais, as pessoas, a voz e os ajustes. Toque na foto do servidor para trocar de servidor.",
+            ),
+            new(
+                "Tap someone, in the chat or in a voice channel, to see their profile.",
+                "Toque em alguém, no chat ou numa sala de voz, para ver o perfil.",
+            ),
+            new(
+                "Save a picture from the chat to the gallery, or share it.",
+                "Salve uma imagem do chat na galeria, ou compartilhe.",
+            ),
+            better(
+                "Tapping a voice channel shows who is there first; joining is a button.",
+                "Tocar numa sala de voz mostra antes quem está nela; para entrar, tem um botão.",
+            ),
+            better(
+                "Sign-ins and your private messages' key are kept sealed by the phone's own key store.",
+                "Os logins e a chave das mensagens privadas ficam guardados selados pelo cofre de chaves do próprio celular.",
+            ),
+        ),
+        Entry(
             "0.3.2", "2026-11-19",
             new(
                 "After an update, this window shows what changed, every version you skipped included.",
