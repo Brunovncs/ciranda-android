@@ -1,7 +1,7 @@
 [package]
 name = "ciranda-mobile"
 description = "Ciranda for Android: the desktop client's core and media, driven from Kotlin"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
@@ -73,6 +73,11 @@ env_logger = { version = "0.11", default-features = false }
 
 [build-dependencies]
 webrtc-sys-build = "0.3"
+
+# LiveKit's webrtc-sys with one fix, livekit/rust-sdks#1468: after the last call ended, no call
+# played any received sound again until the app restarted (vendor/webrtc-sys/VENDORED.md).
+[patch.crates-io]
+webrtc-sys = { path = "vendor/webrtc-sys" }
 
 [profile.dev.package."*"]
 opt-level = 2

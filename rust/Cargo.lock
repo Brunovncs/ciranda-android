@@ -369,7 +369,7 @@ dependencies = [
 
 [[package]]
 name = "ciranda-mobile"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "android_logger",
  "anyhow",
@@ -3829,8 +3829,6 @@ dependencies = [
 [[package]]
 name = "webrtc-sys"
 version = "0.3.53"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbfe2c11c98bfd4839242abf9a4b8ddb16a7ff3cbf87416f40928a06886eb5c7"
 dependencies = [
  "cc",
  "cxx",

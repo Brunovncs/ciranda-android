@@ -16,6 +16,21 @@ import java.time.LocalDate
 object News {
     val ENTRIES: List<Entry> = listOf(
         Entry(
+            "0.5.0", "2026-11-19",
+            new(
+                "Private calls: call someone from your conversation, encrypted end to end, the same calls as on the computer.",
+                "Chamadas privadas: ligue para alguém pela conversa, com criptografia de ponta a ponta, as mesmas chamadas do computador.",
+            ),
+            new(
+                "A call rings even with the app closed and the screen locked, full screen with Answer and Decline, and a missed call leaves a notification.",
+                "A chamada toca mesmo com o app fechado e a tela bloqueada, em tela inteira com Atender e Recusar, e uma chamada perdida deixa uma notificação.",
+            ),
+            fixed(
+                "After a call or a voice channel ended, the next one no longer stays silent until the app is restarted.",
+                "Depois que uma chamada ou um canal de voz terminava, o próximo não fica mais mudo até reiniciar o app.",
+            ),
+        ),
+        Entry(
             "0.4.0", "2026-11-19",
             new(
                 "Private messages, encrypted end to end and the same as on the computer: tap someone, then Send a message. Only the two of you can read them.",
