@@ -12,7 +12,9 @@ Daí em diante, Ciranda avisa quando sai uma versão nova e se atualiza sozinha:
 
 ## O que tem
 
-- Canais de texto: mensagens com a mesma formatação do desktop (negrito, código, citações, listas, `:emoji:`, menções), imagens, arquivos, reações, respostas, edição e exclusão.
+- Uma barra embaixo com o servidor (toque na foto para trocar de servidor), os canais, as pessoas, a voz e os ajustes. Tocar em alguém, no chat ou numa sala de voz, abre o perfil; tocar numa sala mostra quem está nela antes de entrar.
+- Canais de texto: mensagens com a mesma formatação do desktop (negrito, código, citações, listas, `:emoji:`, menções), imagens (que dá para salvar na galeria ou compartilhar), arquivos, reações, respostas, edição e exclusão.
+- Mensagens privadas com criptografia de ponta a ponta, as mesmas do desktop: texto, imagens, arquivos, reações, respostas, edição, código de segurança e bloqueio. A chave fica neste celular, selada pelo cofre de chaves do Android; num celular novo, a chave de recuperação destrava as conversas.
 - Canais de voz: entrar e sair, mutar, ensurdecer, ver quem está falando, volume de cada pessoa (até 350%), cancelamento de eco e supressão de ruído (DeepFilterNet, a mesma do desktop).
 - A voz continua com a tela apagada ou com outro app na frente, com mutar e sair na notificação.
 - Bloqueio com digital, rosto ou o PIN do celular (oferecido depois de entrar; em Configurações → Segurança, com quanto tempo fora antes de pedir de novo). Voltar de algo que o próprio app abriu (escolher arquivo, compartilhar, PIN) não pede de novo.
@@ -20,7 +22,7 @@ Daí em diante, Ciranda avisa quando sai uma versão nova e se atualiza sozinha:
 - Notificação quando alguém te menciona (`@você`, `@everyone`, `@todos`, `@all`, `@here` ou uma resposta), em qualquer servidor em que você entrou, mesmo com o app fechado. Uma conexão leve fica aberta para isso, sem te mostrar online; o Android exige um aviso fixo, silencioso, que dá para esconder. Precisa de servidor com a versão que avisa menções em segundo plano (`mentions` em `/api/health`).
 - Atualização pelo próprio app, como no desktop. Depois de atualizar, uma janela mostra o que mudou em cada versão que você pulou; o histórico fica em Configurações → Atualizações → Novidades. As notas ficam em `app/src/main/kotlin/app/ciranda/android/News.kt`, e o build falha se a versão de `rust/Cargo.toml` não tiver a sua.
 
-Ainda não tem: conversas privadas e chamadas privadas, assistir telas e câmeras, compartilhar a tela ou a câmera, Cirandinha e soundpad.
+Ainda não tem: chamadas privadas, assistir telas e câmeras, compartilhar a tela ou a câmera, Cirandinha e soundpad.
 
 ## Como é feito
 

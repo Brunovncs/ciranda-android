@@ -74,7 +74,7 @@ import app.ciranda.android.Updater
 import kotlinx.coroutines.launch
 
 @Composable
-fun SettingsScreen(activity: MainActivity, state: AppState, onClose: () -> Unit) {
+fun SettingsScreen(activity: MainActivity, state: AppState, privates: Privates, onClose: () -> Unit) {
     val p = LocalPalette.current
     val st = state.settings
     var changingPassword by remember { mutableStateOf(false) }
@@ -95,6 +95,10 @@ fun SettingsScreen(activity: MainActivity, state: AppState, onClose: () -> Unit)
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
                 Notifications(activity)
                 Security(activity)
+                state.session?.let { s ->
+                    Section(tr("Private messages", "Mensagens privadas"))
+                    PrivacySection(privates, s)
+                }
 
                 Section(tr("Updates", "Atualizações"))
                 UpdateCard(activity, state)

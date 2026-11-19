@@ -135,10 +135,14 @@ pub struct Engine {
     /// Whether mentions become notifications: the interface's setting.
     notify: bool,
     watching: watch::Watching,
+    /// A private conversation to open once its server is on screen and its list has loaded: a
+    /// notification's, from another server.
+    pub pending_dm: Option<(String, String, ConversationId)>,
 }
 
 impl Engine {
     fn new(handle: Handle, cache_dir: PathBuf, emit: Emit) -> Engine {
+        session::private::clear_opened(&cache_dir);
         let store = Store::load();
         let cache = Cache::open(cache_dir.join("media"), store.values.media_cache_mb.max(64));
         let e = Engine {
@@ -167,6 +171,7 @@ impl Engine {
             away_since: Some(Instant::now()),
             notify: false,
             watching: watch::Watching::default(),
+            pending_dm: None,
         };
         e.apply_audio_prefs();
         e
@@ -214,11 +219,13 @@ impl Engine {
             let voice = self.call.as_ref().map(|c| c.state(self.session.as_ref())).unwrap_or(Value::Null);
             self.send(json!({ "type": "voice", "voice": voice }));
         }
-        if std::mem::take(&mut self.dirty.chat)
-            && self.visible
-            && let Some(chat) = self.session.as_ref().and_then(|s| s.chat_state())
-        {
-            self.send(chat);
+        if std::mem::take(&mut self.dirty.chat) && self.visible {
+            if let Some(chat) = self.session.as_ref().and_then(|s| s.chat_state()) {
+                self.send(chat);
+            }
+            // The private conversation on screen, or word that none is.
+            let private = self.session.as_ref().and_then(|s| s.private_chat());
+            self.send(private.unwrap_or_else(|| json!({ "type": "dmChat", "conversationId": null })));
         }
     }
 
@@ -336,6 +343,11 @@ impl Engine {
             "visible" => {
                 self.visible = flag("on");
                 self.away_since = if self.visible { None } else { Some(Instant::now()) };
+                // The phone may end the app at any moment once it is away: the keys of private
+                // conversations written so far go to disk now.
+                if !self.visible {
+                    crate::core::runtime().spawn_blocking(crate::core::keystore::flush);
+                }
                 if self.visible {
                     if let Some(s) = self.session.as_mut().filter(|s| s.parked) {
                         s.unpark(&self.handle);
@@ -358,7 +370,7 @@ impl Engine {
                 self.notify = flag("on");
                 self.sync_watch();
             }
-            "openAt" => self.open_at(&text("server"), &text("username"), int("channelId")),
+            "openAt" => self.open_at(&text("server"), &text("username"), int("channelId"), int("conversationId")),
             "signIn" => self.sign_in(&cmd),
             "invite" => self.open_invite(&text("link")),
             "shareInvite" => self.share_invite(),
@@ -463,7 +475,13 @@ impl Engine {
             }
             "settings" => self.change_settings(&cmd),
             "changePassword" => self.change_password(text("current"), text("password")),
-            other => log::warn!("unknown command {other:?}"),
+            other => {
+                if !self.private_command(other, &cmd) {
+                    log::warn!("unknown command {other:?}");
+                }
+                // Whatever it did may show in the conversation on screen.
+                self.mark_chat();
+            }
         }
     }
 
@@ -605,14 +623,19 @@ impl Engine {
 
     /// Where a notification leads: a channel on a server, signed in to first if it is not the one
     /// on screen.
-    fn open_at(&mut self, url: &str, username: &str, channel: Option<ChannelId>) {
+    fn open_at(&mut self, url: &str, username: &str, channel: Option<ChannelId>, conversation: Option<ConversationId>) {
         let here = self.session.as_ref().is_some_and(|s| same_server(&s.api.base(), url) && s.me.nickname.eq_ignore_ascii_case(username));
         if here {
             if let Some(id) = channel {
                 self.command(json!({ "cmd": "open", "channelId": id }));
             }
+            if let Some(id) = conversation {
+                self.command(json!({ "cmd": "dmOpen", "id": id }));
+            }
             return;
         }
+        // Opened once that server's conversations have loaded.
+        self.pending_dm = conversation.map(|id| (url.to_string(), username.to_string(), id));
         let Some(saved) =
             self.store.values.saved_servers.iter().find(|s| same_server(&s.url, url) && s.username.eq_ignore_ascii_case(username)).cloned()
         else {

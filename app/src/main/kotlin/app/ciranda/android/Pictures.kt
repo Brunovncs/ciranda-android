@@ -31,12 +31,18 @@ object Pictures {
     private val order = ArrayDeque<String>()
     private var bytes = 0L
 
+    /** Where each picture's file is, whole, for saving or sharing it. */
+    private val files = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    fun file(hash: String): File? = files[hash]?.let(::File)?.takeIf { it.exists() }
+
     fun onEvent(e: Event.Picture) {
         val path = e.path
         if (path == null) {
             CirandaApp.scope.launch { fail(e.hash) }
             return
         }
+        files[e.hash] = path
         CirandaApp.scope.launch {
             val bmp = withContext(Dispatchers.IO) { decode(File(path)) }
             if (bmp == null) {
@@ -81,7 +87,12 @@ object Pictures {
             failed.remove(hash)
             asked.add(hash)
         }
-        Engine.send("picture", "hash" to hash, "kind" to kind)
+        // A private conversation's is sealed: the engine opens it with the key in its message.
+        if (kind.startsWith("dm:")) {
+            Engine.send("dmPicture", "conversationId" to kind.removePrefix("dm:").toLongOrNull(), "hash" to hash)
+        } else {
+            Engine.send("picture", "hash" to hash, "kind" to kind)
+        }
     }
 
     /**

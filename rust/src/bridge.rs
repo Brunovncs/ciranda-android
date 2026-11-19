@@ -100,6 +100,18 @@ pub extern "system" fn Java_app_ciranda_android_Native_start(
     crate::engine::start(PathBuf::from(cache_dir), Arc::new(emit));
 }
 
+/// `Native.sealWith(key)`: the key secrets at rest are sealed with (sign-ins, the private
+/// conversations' identity), kept by the Keystore on the Kotlin side. Before `start`; without it,
+/// they are kept as they are, as before.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_ciranda_android_Native_sealWith(env: JNIEnv, _class: JClass, key: jni::objects::JByteArray) {
+    let Ok(bytes) = env.convert_byte_array(&key) else { return };
+    let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice()) else { return };
+    crate::core::secret::provide(key);
+    let mut bytes = bytes;
+    zeroize::Zeroize::zeroize(&mut bytes);
+}
+
 /// `Native.command(json)`: anything the interface asks for.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_app_ciranda_android_Native_command(mut env: JNIEnv, _class: JClass, json: JString) {

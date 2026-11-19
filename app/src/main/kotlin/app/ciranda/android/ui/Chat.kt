@@ -50,10 +50,14 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddCircle
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -142,7 +146,14 @@ private data class Aside(val where: String, val kind: AsideKind, val message: Me
 
 private val aside = MutableStateFlow<Aside?>(null)
 
-private fun where(s: SessionState, channelId: Long) = "${s.url}#$channelId"
+/** Where a chat is: a channel, or a private conversation (`dm`), by id, with the name it goes by. */
+@androidx.compose.runtime.Immutable
+data class Place(val id: Long, val dm: Boolean, val name: String) {
+    /** What its pictures are asked for as (`Pictures`): a private one's are sealed. */
+    val pictureKind: String get() = if (dm) "dm:$id" else "picture"
+}
+
+private fun where(s: SessionState, place: Place) = "${s.url}#${if (place.dm) "dm" else ""}${place.id}"
 
 /** Messages by the same person this close together share one header. */
 private const val GROUP_WINDOW_MS = 7 * 60 * 1000L
@@ -171,16 +182,16 @@ private fun rowsOf(messages: List<Message>): List<ChatRow> {
 }
 
 @Composable
-fun ChatView(activity: MainActivity, s: SessionState, chat: ChatState) {
+fun ChatView(activity: MainActivity, s: SessionState, chat: ChatState, place: Place, onProfile: (Long) -> Unit) {
     val p = LocalPalette.current
     // Each channel opens at its newest message, not where the last one was left.
     val list = remember(chat.channelId) { LazyListState() }
-    var viewer by remember { mutableStateOf<String?>(null) }
+    var viewer by remember { mutableStateOf<Viewing?>(null) }
     val rows = remember(chat.messages) { rowsOf(chat.messages) }
     LaunchedEffect(chat.channelId, list) {
         snapshotFlow { list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }.collect { last ->
-            val c = Engine.chat.value ?: return@collect
-            if (c.moreBefore && !c.loadingOlder && last >= c.messages.size - 10) Engine.send("older")
+            val c = (if (place.dm) Engine.privateChat else Engine.chat).value ?: return@collect
+            if (c.moreBefore && !c.loadingOlder && last >= c.messages.size - 10) Engine.send(if (place.dm) "dmOlder" else "older")
         }
     }
     // Scrolled to the newest when a message arrives while at the bottom.
@@ -192,7 +203,7 @@ fun ChatView(activity: MainActivity, s: SessionState, chat: ChatState) {
             if (chat.error != null) {
                 Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(chat.error, color = p.danger, textAlign = TextAlign.Center)
-                    TextButton({ Engine.send("open", "channelId" to chat.channelId) }) {
+                    TextButton({ if (place.dm) Engine.send("dmOpen", "id" to place.id) else Engine.send("open", "channelId" to chat.channelId) }) {
                         Text(tr("Try again", "Tentar de novo"))
                     }
                 }
@@ -210,7 +221,7 @@ fun ChatView(activity: MainActivity, s: SessionState, chat: ChatState) {
             items(rows, key = { it.message.id }, contentType = { "message" }) { row ->
                 Column {
                     if (row.newDay) DayDivider(row.message.createdAt)
-                    MessageRow(s, row.message, row.grouped, onPicture = { viewer = it })
+                    MessageRow(s, place, row.message, row.grouped, onPicture = { viewer = it }, onProfile = onProfile)
                 }
             }
             item(key = "top") {
@@ -219,7 +230,13 @@ fun ChatView(activity: MainActivity, s: SessionState, chat: ChatState) {
                 } else if (!chat.moreBefore) {
                     Column(Modifier.fillMaxWidth().padding(20.dp)) {
                         Text(
-                            tr("This is the start of #${s.channel(chat.channelId)?.name ?: ""}.", "Este é o começo de #${s.channel(chat.channelId)?.name ?: ""}."),
+                            when {
+                                place.dm -> tr(
+                                    "This is the start of your conversation with ${place.name}. Only the two of you can read it, not even whoever runs the server.",
+                                    "Este é o começo da sua conversa com ${place.name}. Só vocês dois conseguem ler, nem quem administra o servidor.",
+                                )
+                                else -> tr("This is the start of #${place.name}.", "Este é o começo de #${place.name}.")
+                            },
                             color = p.muted, style = MaterialTheme.typography.bodyMedium,
                         )
                     }
@@ -242,7 +259,7 @@ fun ChatView(activity: MainActivity, s: SessionState, chat: ChatState) {
             }
         }
     }
-    viewer?.let { hash -> PictureViewer(hash) { viewer = null } }
+    viewer?.let { v -> PictureViewer(activity, v) { viewer = null } }
 }
 
 @Composable
@@ -258,12 +275,13 @@ private fun DayDivider(at: Long) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageRow(s: SessionState, m: Message, grouped: Boolean, onPicture: (String) -> Unit) {
+private fun MessageRow(s: SessionState, place: Place, m: Message, grouped: Boolean, onPicture: (Viewing) -> Unit, onProfile: (Long) -> Unit) {
     val p = LocalPalette.current
     val ctx = LocalContext.current
     val haptic = LocalHapticFeedback.current
     var menu by remember { mutableStateOf(false) }
     val mine = m.userId == s.me.id
+    val sealed = m.call != null || m.unreadable
     val user = s.user(m.userId)
     Box {
         Row(
@@ -278,10 +296,13 @@ private fun MessageRow(s: SessionState, m: Message, grouped: Boolean, onPicture:
                 )
                 .padding(start = 12.dp, end = 12.dp, top = if (grouped) 1.dp else 10.dp, bottom = 1.dp),
         ) {
+            // Whoever wrote it, tapped (the picture or the name): their profile.
+            val profile = tr("Open profile", "Abrir perfil")
+            val toProfile = m.userId?.let { id -> Modifier.clickable(role = Role.Button, onClickLabel = profile) { onProfile(id) } } ?: Modifier
             if (grouped) {
                 Spacer(Modifier.width(48.dp))
             } else {
-                Avatar(m.author, user?.avatarHash ?: m.avatar, size = 38.dp)
+                Avatar(m.author, user?.avatarHash ?: m.avatar, size = 38.dp, modifier = Modifier.clip(CircleShape).then(toProfile))
                 Spacer(Modifier.width(10.dp))
             }
             Column(Modifier.weight(1f)) {
@@ -291,36 +312,55 @@ private fun MessageRow(s: SessionState, m: Message, grouped: Boolean, onPicture:
                     Row {
                         Text(
                             m.author, color = nameTextColor(m.author), fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleSmall,
-                            modifier = Modifier.alignByBaseline(),
+                            modifier = Modifier.alignByBaseline().clip(RoundedCornerShape(4.dp)).then(toProfile),
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(time, color = p.muted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.alignByBaseline())
                     }
                 }
-                if (m.body.isNotEmpty()) Body(m)
+                when {
+                    m.call != null -> SealedNote(Icons.Filled.Call, m.call)
+                    m.outOfPlace -> SealedNote(
+                        Icons.Filled.Lock,
+                        tr("Refused: this message isn't where it was sent. The server may have moved or repeated it.", "Recusada: esta mensagem não está onde foi enviada. O servidor pode tê-la movido ou repetido."),
+                    )
+                    m.unreadable -> SealedNote(
+                        Icons.Filled.Lock,
+                        tr("This message was sealed to a key this phone doesn't have.", "Esta mensagem foi protegida com uma chave que este celular não tem."),
+                    )
+                    m.body.isNotEmpty() -> Body(m)
+                }
                 if (m.edited) Text(tr("(edited)", "(editada)"), color = p.muted, style = MaterialTheme.typography.labelSmall)
-                m.attachmentHash?.let { Attachment(m, it, onPicture) }
-                if (m.reactions.isNotEmpty()) Reactions(s, m)
-            }
-        }
-        DropdownMenu(menu, { menu = false }) {
-            Row(Modifier.padding(horizontal = 8.dp)) {
-                for (e in QUICK) {
+                m.attachmentHash?.let { Attachment(m, it, place, onPicture) }
+                if (m.reactions.isNotEmpty()) Reactions(s, m, place)
+                if (m.unconfirmed) {
                     Text(
-                        e, fontSize = 22.sp,
-                        modifier = Modifier.clip(CircleShape).clickable(role = Role.Button) {
-                            menu = false
-                            val on = m.reactions.none { it.emoji == e && s.me.id in it.userIds }
-                            Engine.send("react", "id" to m.id, "emoji" to e, "on" to on)
-                        }.padding(8.dp),
+                        tr("Sent with a key you haven't confirmed", "Enviada com uma chave que você não confirmou"),
+                        color = p.warning, style = MaterialTheme.typography.labelSmall,
                     )
                 }
             }
-            DropdownMenuItem(
-                { Text(tr("Reply", "Responder")) },
-                { menu = false; aside.value = Aside(where(s, m.channelId), AsideKind.Reply, m) },
-                leadingIcon = { Icon(Icons.AutoMirrored.Filled.Reply, null) },
-            )
+        }
+        DropdownMenu(menu, { menu = false }) {
+            // A call's line, or a message that didn't open, can't be answered nor reacted to.
+            if (!sealed) {
+                Row(Modifier.padding(horizontal = 8.dp)) {
+                    for (e in QUICK) {
+                        Text(
+                            e, fontSize = 22.sp,
+                            modifier = Modifier.clip(CircleShape).clickable(role = Role.Button) {
+                                menu = false
+                                react(s, place, m, e)
+                            }.padding(8.dp),
+                        )
+                    }
+                }
+                DropdownMenuItem(
+                    { Text(tr("Reply", "Responder")) },
+                    { menu = false; aside.value = Aside(where(s, place), AsideKind.Reply, m) },
+                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.Reply, null) },
+                )
+            }
             if (m.body.isNotEmpty()) {
                 DropdownMenuItem(
                     { Text(tr("Copy text", "Copiar texto")) },
@@ -331,21 +371,46 @@ private fun MessageRow(s: SessionState, m: Message, grouped: Boolean, onPicture:
                     leadingIcon = { Icon(Icons.Filled.ContentCopy, null) },
                 )
             }
-            if (mine) {
+            if (mine && !sealed) {
                 DropdownMenuItem(
                     { Text(tr("Edit", "Editar")) },
-                    { menu = false; aside.value = Aside(where(s, m.channelId), AsideKind.Edit, m) },
+                    { menu = false; aside.value = Aside(where(s, place), AsideKind.Edit, m) },
                     leadingIcon = { Icon(Icons.Filled.Edit, null) },
                 )
             }
-            if (mine || s.me.admin) {
+            // In a private conversation it goes for both, and only its writer can; no admin there.
+            if (mine || (s.me.admin && !place.dm)) {
                 DropdownMenuItem(
                     { Text(tr("Delete", "Apagar"), color = p.danger) },
-                    { menu = false; Engine.send("delete", "id" to m.id) },
+                    { menu = false; Engine.send(if (place.dm) "dmDelete" else "delete", "id" to m.id) },
                     leadingIcon = { Icon(Icons.Filled.Delete, null, tint = p.danger) },
                 )
             }
         }
+    }
+}
+
+/**
+ * Your `emoji` on a message, or off it if it is there. A channel's reactions are one each; a
+ * private conversation's are sealed as your whole set, which the engine keeps.
+ */
+private fun react(s: SessionState, place: Place, m: Message, emoji: String) {
+    if (place.dm) {
+        Engine.send("dmReact", "id" to m.id, "emoji" to emoji)
+    } else {
+        val on = m.reactions.none { it.emoji == emoji && s.me.id in it.userIds }
+        Engine.send("react", "id" to m.id, "emoji" to emoji, "on" to on)
+    }
+}
+
+/** A line in place of a message's words: a call, or a message that didn't open here. */
+@Composable
+private fun SealedNote(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {
+    val p = LocalPalette.current
+    Row(Modifier.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = p.muted, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(text, color = p.muted, fontStyle = FontStyle.Italic, style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -441,15 +506,15 @@ private fun Line(spans: List<Span>, size: TextUnit, bold: Boolean = false) {
 }
 
 @Composable
-private fun Attachment(m: Message, hash: String, onPicture: (String) -> Unit) {
+private fun Attachment(m: Message, hash: String, place: Place, onPicture: (Viewing) -> Unit) {
     val p = LocalPalette.current
     val ctx = LocalContext.current
     val image = m.mediaType == "image" && (m.attachmentBytes ?: 0) <= 64L shl 20
     if (image && !Pictures.failed(hash)) {
-        val pic = Pictures.get(hash)
+        val pic = Pictures.get(hash, place.pictureKind)
         Box(
             Modifier.padding(top = 4.dp).widthIn(max = 300.dp).heightIn(min = 80.dp, max = 320.dp).clip(RoundedCornerShape(10.dp))
-                .background(p.raised).clickable(role = Role.Button, onClickLabel = tr("Open picture", "Abrir imagem")) { onPicture(hash) }
+                .background(p.raised).clickable(role = Role.Button, onClickLabel = tr("Open picture", "Abrir imagem")) { onPicture(Viewing(hash, m.attachmentName, place.pictureKind)) }
                 .semantics { contentDescription = m.attachmentName ?: "" },
             contentAlignment = Alignment.Center,
         ) {
@@ -464,7 +529,11 @@ private fun Attachment(m: Message, hash: String, onPicture: (String) -> Unit) {
     Row(
         Modifier.padding(top = 4.dp).widthIn(max = 320.dp).clip(RoundedCornerShape(10.dp)).border(1.dp, p.border, RoundedCornerShape(10.dp))
             .background(p.surface).clickable(role = Role.Button, onClickLabel = tr("Download", "Baixar")) {
-                Engine.send("file", "hash" to hash, "name" to m.attachmentName, "size" to m.attachmentBytes)
+                if (place.dm) {
+                    Engine.send("dmFile", "conversationId" to place.id, "hash" to hash)
+                } else {
+                    Engine.send("file", "hash" to hash, "name" to m.attachmentName, "size" to m.attachmentBytes)
+                }
                 android.widget.Toast.makeText(ctx, tr("Downloading…", "Baixando…"), android.widget.Toast.LENGTH_SHORT).show()
             }.padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -480,7 +549,7 @@ private fun Attachment(m: Message, hash: String, onPicture: (String) -> Unit) {
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun Reactions(s: SessionState, m: Message) {
+private fun Reactions(s: SessionState, m: Message, place: Place) {
     val p = LocalPalette.current
     FlowRow(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         for (r in m.reactions) {
@@ -491,7 +560,7 @@ private fun Reactions(s: SessionState, m: Message) {
                 Modifier.heightIn(min = 32.dp).clip(shape)
                     .background(if (mine) p.accent.copy(alpha = 0.22f) else p.raised)
                     .border(1.dp, if (mine) p.accent else Color.Transparent, shape)
-                    .toggleable(mine, role = Role.Switch) { Engine.send("react", "id" to m.id, "emoji" to r.emoji, "on" to !mine) }
+                    .toggleable(mine, role = Role.Switch) { react(s, place, m, r.emoji) }
                     .padding(horizontal = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -504,27 +573,36 @@ private fun Reactions(s: SessionState, m: Message) {
     }
 }
 
+/** A picture opened from the chat: its hash, and the name it was sent with. */
+class Viewing(val hash: String, val name: String?, val kind: String = "picture")
+
 @Composable
-private fun PictureViewer(hash: String, onClose: () -> Unit) {
+fun PictureViewer(activity: MainActivity, picture: Viewing, onClose: () -> Unit) {
     Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
         Box(
             Modifier.fillMaxSize().background(Color.Black).clickable(onClickLabel = tr("Close", "Fechar"), onClick = onClose),
             contentAlignment = Alignment.Center,
         ) {
-            Pictures.get(hash)?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
-            // Tapping anywhere closes it; this is for whoever does not know that.
-            IconButton(
-                onClose, Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(4.dp),
-                colors = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.45f), contentColor = Color.White),
-            ) { Icon(Icons.Filled.Close, tr("Close", "Fechar")) }
+            Pictures.get(picture.hash, picture.kind)?.let { Image(it, picture.name, Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
+            val dark = IconButtonDefaults.iconButtonColors(containerColor = Color.Black.copy(alpha = 0.45f), contentColor = Color.White)
+            Row(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                IconButton({ activity.sharePicture(picture.hash) }, colors = dark) {
+                    Icon(Icons.Filled.Share, tr("Share", "Compartilhar"))
+                }
+                IconButton({ activity.savePicture(picture.hash, picture.name) }, colors = dark) {
+                    Icon(Icons.Filled.Download, tr("Save to gallery", "Salvar na galeria"))
+                }
+                // Tapping anywhere closes it; this is for whoever does not know that.
+                IconButton(onClose, colors = dark) { Icon(Icons.Filled.Close, tr("Close", "Fechar")) }
+            }
         }
     }
 }
 
 @Composable
-fun Composer(activity: MainActivity, s: SessionState, channel: Channel) {
+fun Composer(activity: MainActivity, s: SessionState, place: Place) {
     val p = LocalPalette.current
-    val here = where(s, channel.id)
+    val here = where(s, place)
     // The draft survives the screen turning, per channel.
     var text by rememberSaveable(here) { mutableStateOf("") }
     val now = aside.collectAsState().value?.takeIf { it.where == here }
@@ -541,7 +619,7 @@ fun Composer(activity: MainActivity, s: SessionState, channel: Channel) {
                     if (e.on) text = ""
                 }
                 // Not sent: the text comes back, unless something else was typed since.
-                e is Event.SendFailed && e.channelId == channel.id && text.isBlank() -> text = e.body
+                e is Event.SendFailed && e.channelId == place.id && e.private == place.dm && text.isBlank() -> text = e.body
             }
         }
     }
@@ -557,7 +635,8 @@ fun Composer(activity: MainActivity, s: SessionState, channel: Channel) {
     }
     val canSend = text.isNotBlank()
     val sendTint by animateColorAsState(if (canSend) p.accent else p.muted, tween(120), label = "send")
-    Column(Modifier.fillMaxWidth().background(p.surface).topBorder(p.border).navigationBarsPadding().imePadding()) {
+    // The bar under it keeps clear of the navigation bar; while typing, the keyboard's height does.
+    Column(Modifier.fillMaxWidth().background(p.surface).topBorder(p.border).imePadding()) {
         val banner = when {
             edit != null -> tr("Editing your message", "Editando sua mensagem")
             reply != null -> tr("Replying to ${reply.author}", "Respondendo a ${reply.author}")
@@ -578,13 +657,18 @@ fun Composer(activity: MainActivity, s: SessionState, channel: Channel) {
             }
         }
         Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.Bottom) {
-            IconButton({ activity.pickAttachment(channel.id, text) }, enabled = edit == null && !uploading) {
+            IconButton({ activity.pickAttachment(place.id, text, place.dm) }, enabled = edit == null && !uploading) {
                 Icon(Icons.Filled.AddCircle, tr("Send a file", "Enviar arquivo"), tint = p.muted)
             }
             TextField(
                 text, { text = it },
                 modifier = Modifier.weight(1f).heightIn(min = 48.dp, max = 160.dp).focusRequester(focus),
-                placeholder = { Text(tr("Message #${channel.name}", "Mensagem em #${channel.name}"), maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                placeholder = {
+                    Text(
+                        if (place.dm) tr("Message ${place.name}", "Mensagem para ${place.name}") else tr("Message #${place.name}", "Mensagem em #${place.name}"),
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 shape = RoundedCornerShape(22.dp),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                 colors = TextFieldDefaults.colors(
@@ -599,9 +683,11 @@ fun Composer(activity: MainActivity, s: SessionState, channel: Channel) {
                     val e = edit
                     val r = reply
                     when {
+                        place.dm && e != null -> Engine.send("dmEdit", "id" to e.id, "body" to body)
+                        place.dm -> Engine.send("dmSend", "id" to place.id, "body" to body, "replyTo" to r?.id)
                         e != null -> Engine.send("edit", "id" to e.id, "body" to body)
-                        r != null -> Engine.send("send", "channelId" to channel.id, "body" to body, "replyTo" to r.id)
-                        else -> Engine.send("send", "channelId" to channel.id, "body" to body)
+                        r != null -> Engine.send("send", "channelId" to place.id, "body" to body, "replyTo" to r.id)
+                        else -> Engine.send("send", "channelId" to place.id, "body" to body)
                     }
                     text = ""
                     aside.value = null

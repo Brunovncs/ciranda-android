@@ -19,6 +19,7 @@ class CirandaApp : Application() {
         const val CHANNEL_VOICE = "voice"
         const val CHANNEL_MESSAGES = "messages"
         const val CHANNEL_UPDATES = "updates"
+        const val CHANNEL_PRIVATE = "private"
 
         /** Whether an activity of ours is on screen. */
         @Volatile
@@ -32,6 +33,10 @@ class CirandaApp : Application() {
         AppLock.onAppStart()
         channels()
         val data = File(filesDir, "ciranda").apply { mkdirs() }
+        SealKey.get(this)?.let { key ->
+            Native.sealWith(key)
+            key.fill(0)
+        }
         Native.start(this, data.path, cacheDir.path)
         Engine.send("hello", "locale" to Locale.getDefault().language)
         Engine.send("resume")
@@ -41,6 +46,7 @@ class CirandaApp : Application() {
                     is Event.Picture -> Pictures.onEvent(e)
                     is Event.InCall -> if (e.on) VoiceService.start(this@CirandaApp)
                     is Event.Mention -> Notifier.show(this@CirandaApp, e)
+                    is Event.PrivateMessage -> Notifier.showPrivate(this@CirandaApp, e)
                     else -> {}
                 }
             }
@@ -62,6 +68,9 @@ class CirandaApp : Application() {
         )
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_UPDATES, if (pt) "Atualizações" else "Updates", NotificationManager.IMPORTANCE_DEFAULT),
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_PRIVATE, if (pt) "Mensagens privadas" else "Private messages", NotificationManager.IMPORTANCE_HIGH),
         )
         nm.deleteNotificationChannel("connection")
     }

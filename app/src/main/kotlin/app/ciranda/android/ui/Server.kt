@@ -16,6 +16,9 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -54,20 +57,16 @@ import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -116,10 +115,18 @@ import app.ciranda.android.VoiceLink
 import app.ciranda.android.VoiceState
 import kotlinx.coroutines.launch
 
-/** What is over the chat, if anything: one at a time, so that two can never be up together. */
-private enum class Sheet { None, Voice, Settings }
+/** What is over the chat, if anything: one sheet at a time, so that two can never be up together. */
+private enum class Sheet { None, Channels, People, Voice, Settings }
 
-@OptIn(ExperimentalMaterial3Api::class)
+private fun Sheet.tab(): Tab? = when (this) {
+    Sheet.Channels -> Tab.Channels
+    Sheet.People -> Tab.People
+    Sheet.Voice -> Tab.Voice
+    Sheet.Settings -> Tab.Settings
+    Sheet.None -> null
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
     val p = LocalPalette.current
@@ -128,18 +135,19 @@ fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
     val voice = Engine.voice.collectAsState()
     val inVoice by remember { derivedStateOf { voice.value != null } }
     val chat by Engine.chat.collectAsState()
-    val drawer = rememberDrawerState(DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
     var sheet by rememberSaveable { mutableStateOf(Sheet.None) }
+    // Over the sheets: a voice channel looked at before joining, and someone's profile.
+    var room by rememberSaveable { mutableStateOf<Long?>(null) }
+    var profile by rememberSaveable { mutableStateOf<Long?>(null) }
     var askPassword by remember { mutableStateOf<Pair<Long, Boolean>?>(null) }
+    val privates = rememberPrivate(activity, s)
 
     LaunchedEffect(Unit) {
         Engine.events.collect { e ->
             if (e is Event.NeedsPassword) askPassword = e.channelId to e.wrong
         }
     }
-    // The call over (left, or dropped by someone): its sheet has nothing to show, and must not be
-    // waiting to come back with the next one.
+    // The call over (left, or dropped by someone): its controls have nothing to show.
     LaunchedEffect(inVoice) { if (!inVoice && sheet == Sheet.Voice) sheet = Sheet.None }
     // A channel on screen has nothing left to tell in a notification.
     val resumed by activity.resumes.collectAsState()
@@ -150,89 +158,123 @@ fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
     LaunchedEffect(intent) {
         val i = intent ?: return@LaunchedEffect
         // The engine opens the channel (`MainActivity.takeMention`); the chat shows it.
-        if (i.action == app.ciranda.android.Notifier.OPEN) drawer.close()
+        if (i.action == app.ciranda.android.Notifier.OPEN) sheet = Sheet.None
         if (i.getBooleanExtra("update", false)) sheet = Sheet.Settings
         activity.pending.value = null
     }
 
-    // Back closes the drawer, and otherwise sends Ciranda to the background as chat apps do,
-    // rather than closing it: a call goes on either way.
-    androidx.activity.compose.BackHandler(enabled = drawer.isClosed) { activity.moveTaskToBack(true) }
-    androidx.activity.compose.BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
+    // Back sends Ciranda to the background as chat apps do, rather than closing it: a call goes
+    // on either way. The sheets take Back for themselves while open.
+    androidx.activity.compose.BackHandler { activity.moveTaskToBack(true) }
 
+    val openProfile = { id: Long -> profile = id }
+    val showRoom = { c: Channel -> room = c.id }
     val joinVoice = { c: Channel ->
         if (voice.value?.channelId != c.id) activity.join(c.id)
+        room = null
+        profile = null
         sheet = Sheet.Voice
     }
+    val switch = { target: SavedServer? ->
+        activity.leavingCall {
+            sheet = Sheet.None
+            if (target == null) Engine.send("switch") else Engine.send("resume", "url" to target.url, "username" to target.username)
+        }
+    }
 
-    ModalNavigationDrawer(
-        drawerState = drawer,
-        drawerContent = {
-            ModalDrawerSheet(drawerContainerColor = p.surface, modifier = Modifier.width(320.dp)) {
-                ChannelList(
-                    s, voice,
-                    onText = { c ->
-                        Engine.send("open", "channelId" to c.id)
-                        scope.launch { drawer.close() }
-                    },
-                    onVoice = { c ->
-                        joinVoice(c)
-                        scope.launch { drawer.close() }
-                    },
-                    onSettings = { sheet = Sheet.Settings },
-                    saved = state.saved,
-                    // Straight to a server already signed in to, or to the list of them for another.
-                    onSwitch = { target ->
-                        activity.leavingCall {
-                            scope.launch { drawer.close() }
-                            if (target == null) Engine.send("switch") else Engine.send("resume", "url" to target.url, "username" to target.username)
-                        }
-                    },
-                )
-            }
-        },
-    ) {
-        Column(Modifier.fillMaxSize().background(p.bg)) {
-            val channel = s.channel(s.openChannel)
-            TopBar(
-                channel = channel,
-                title = channel?.name ?: s.name,
-                subtitle = if (!s.up) tr("Reconnecting…", "Reconectando…") else null,
-                onMenu = { scope.launch { drawer.open() } },
-                onPeople = if (inVoice) ({ sheet = Sheet.Voice }) else null,
-            )
-            UpdateBanner(activity)
-            Box(Modifier.weight(1f)) {
-                val c = chat
-                if (channel != null && c != null && c.channelId == channel.id) {
+    Column(Modifier.fillMaxSize().background(p.bg)) {
+        val conversation = privates.open
+        val channel = s.channel(s.openChannel)
+        if (conversation != null) {
+            PrivateTopBar(privates, s, onProfile = openProfile)
+        } else {
+            TopBar(channel = channel, title = channel?.name ?: s.name, subtitle = if (!s.up) tr("Reconnecting…", "Reconectando…") else null)
+        }
+        UpdateBanner(activity)
+        Box(Modifier.weight(1f)) {
+            val c = chat
+            when {
+                conversation != null -> PrivateChat(activity, privates, s, onProfile = openProfile)
+                channel != null && c != null && c.channelId == channel.id ->
                     // Each channel's chat comes in on its own, rather than replacing the last in one frame.
-                    key(channel.id) { FadeIn { ChatView(activity, s, c) } }
-                } else if (channel != null || s.channels.isEmpty()) {
+                    key(channel.id) { FadeIn { ChatView(activity, s, c, Place(channel.id, false, channel.name), onProfile = openProfile) } }
+                channel != null || s.channels.isEmpty() ->
                     // The channel is on its way (or, with no channels yet, the server's list is).
                     // Shown only if it takes a moment: a quick one has nothing to spin for.
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { LoadingIndicator() }
-                } else {
-                    Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
-                        Text(tr("Pick a channel.", "Escolha um canal."), color = p.muted)
-                    }
+                else -> Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Text(tr("Pick a channel.", "Escolha um canal."), color = p.muted)
                 }
             }
-            VoiceBarHost(voice, onOpen = { sheet = Sheet.Voice })
-            if (channel != null && !channel.voice) {
-                Composer(activity, s, channel)
-            } else {
-                Spacer(Modifier.navigationBarsPadding())
-            }
+        }
+        VoiceBarHost(voice, onOpen = { sheet = Sheet.Voice })
+        when {
+            conversation != null -> PrivateComposer(activity, privates, s)
+            channel != null && !channel.voice -> Composer(activity, s, Place(channel.id, false, channel.name))
+        }
+        // While typing, the keyboard has the bottom: the bar comes back when it goes.
+        if (!WindowInsets.isImeVisible) {
+            BottomBar(
+                s, state.saved, sheet.tab(), inVoice, privates.unreadCount,
+                onTab = { t ->
+                    sheet = when (t) {
+                        Tab.Channels -> Sheet.Channels
+                        Tab.People -> Sheet.People
+                        Tab.Voice -> Sheet.Voice
+                        Tab.Settings -> Sheet.Settings
+                    }
+                },
+                onSwitch = switch,
+            )
         }
     }
 
-    if (sheet == Sheet.Voice && inVoice) {
-        ModalBottomSheet({ sheet = Sheet.None }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = p.surface) {
-            VoiceSheet(voice, s)
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    when (sheet) {
+        Sheet.Channels -> ModalBottomSheet({ sheet = Sheet.None }, sheetState = sheetState, containerColor = p.surface) {
+            ChannelList(
+                s, voice,
+                onText = { c ->
+                    privates.close()
+                    Engine.send("open", "channelId" to c.id)
+                    sheet = Sheet.None
+                },
+                onRoom = showRoom,
+                onProfile = openProfile,
+            )
+        }
+        Sheet.People -> ModalBottomSheet({ sheet = Sheet.None }, sheetState = sheetState, containerColor = p.surface) {
+            PeopleSheet(
+                s,
+                conversations = { Conversations(privates, s) { sheet = Sheet.None } },
+                onProfile = openProfile,
+            )
+        }
+        Sheet.Voice -> ModalBottomSheet({ sheet = Sheet.None }, sheetState = sheetState, containerColor = p.surface) {
+            if (inVoice) VoiceSheet(voice, s, openProfile) else VoiceRooms(s, showRoom, openProfile)
+        }
+        Sheet.Settings -> SettingsScreen(activity, state, privates, onClose = { sheet = Sheet.None })
+        Sheet.None -> {}
+    }
+    room?.let { id -> s.channel(id) }?.let { c ->
+        ModalBottomSheet({ room = null }, containerColor = p.surface) {
+            RoomSheet(c, s, voice, onJoin = { joinVoice(c) }, onControls = { room = null; sheet = Sheet.Voice }, onProfile = openProfile)
         }
     }
-    if (sheet == Sheet.Settings) {
-        SettingsScreen(activity, state, onClose = { sheet = Sheet.None })
+    profile?.let { id -> s.user(id) }?.let { u ->
+        ModalBottomSheet({ profile = null }, containerColor = p.surface) {
+            ProfileSheet(
+                u, s, voice,
+                canMessage = privates.available,
+                onMessage = {
+                    profile = null
+                    room = null
+                    sheet = Sheet.None
+                    privates.openWith(u.id)
+                },
+                onRoom = { c -> profile = null; room = c.id },
+            )
+        }
     }
     askPassword?.let { (channelId, wrong) ->
         var pw by remember { mutableStateOf("") }
@@ -265,16 +307,16 @@ fun ServerScreen(activity: MainActivity, state: AppState, s: SessionState) {
             dismissButton = { TextButton({ askPassword = null }) { Text(tr("Cancel", "Cancelar")) } },
         )
     }
+    privates.Dialogs()
 }
 
 @Composable
-private fun TopBar(channel: Channel?, title: String, subtitle: String?, onMenu: () -> Unit, onPeople: (() -> Unit)?) {
+private fun TopBar(channel: Channel?, title: String, subtitle: String?) {
     val p = LocalPalette.current
     Row(
-        Modifier.fillMaxWidth().background(p.surface).statusBarsPadding().heightIn(min = 56.dp).bottomBorder(p.border).padding(horizontal = 4.dp),
+        Modifier.fillMaxWidth().background(p.surface).statusBarsPadding().heightIn(min = 56.dp).bottomBorder(p.border).padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onMenu) { Icon(Icons.Filled.Menu, tr("Channels", "Canais"), tint = p.text) }
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // The server's own name, shown while no channel is open, is not a channel's.
@@ -290,9 +332,6 @@ private fun TopBar(channel: Channel?, title: String, subtitle: String?, onMenu: 
             subtitle?.let {
                 Text(it, style = MaterialTheme.typography.labelSmall, color = p.warning, modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
             }
-        }
-        if (onPeople != null) {
-            IconButton(onPeople) { Icon(Icons.Filled.People, tr("In voice", "Na voz"), tint = p.text) }
         }
     }
 }
@@ -334,121 +373,40 @@ private fun ChannelList(
     s: SessionState,
     voice: State<VoiceState?>,
     onText: (Channel) -> Unit,
-    onVoice: (Channel) -> Unit,
-    onSettings: () -> Unit,
-    saved: List<SavedServer>,
-    onSwitch: (SavedServer?) -> Unit,
+    onRoom: (Channel) -> Unit,
+    onProfile: (Long) -> Unit,
 ) {
     val p = LocalPalette.current
-    var switching by rememberSaveable { mutableStateOf(false) }
-    // The others signed in to: this one is already on screen.
-    val others = remember(saved, s.url, s.me.nickname) {
-        saved.filter { it.signedIn && !(it.username == s.me.nickname && sameServer(it.url, s.url)) }
+    val sections = remember(s.channels, s.groups) {
+        val groups = s.groups.sortedBy { it.position }
+        buildList {
+            add(Section(null, null, s.channels.filter { c -> c.groupId == null || groups.none { g -> g.id == c.groupId } }.sortedBy { it.position }))
+            for (g in groups) add(Section(g.id, g.name, s.channels.filter { it.groupId == g.id }.sortedBy { it.position }))
+        }.filter { it.channels.isNotEmpty() }
     }
-    Column(Modifier.fillMaxHeight().statusBarsPadding().navigationBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            val expanded = tr("Showing your servers", "Mostrando seus servidores")
-            val collapsed = tr("Your servers hidden", "Seus servidores ocultos")
-            Row(
-                Modifier.weight(1f).heightIn(min = 64.dp).clip(RoundedCornerShape(12.dp))
-                    .clickable(role = Role.Button, onClickLabel = tr("Switch server", "Trocar de servidor")) { switching = !switching }
-                    .semantics { stateDescription = if (switching) expanded else collapsed }
-                    .padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Avatar(s.name, s.icon, size = 40.dp, kind = "server")
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(s.name, style = MaterialTheme.typography.titleMedium, color = p.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 24.dp)) {
+        item(key = "title") { SheetTitle(tr("Channels", "Canais"), s.name) }
+        for (section in sections) {
+            if (section.name != null) {
+                // By id: two groups can have the same name, and a list refuses two of one key.
+                item(key = "g${section.id}", contentType = "group") {
                     Text(
-                        if (s.up) "${s.online.size} online" else tr("Reconnecting…", "Reconectando…"),
-                        style = MaterialTheme.typography.labelSmall, color = if (s.up) p.muted else p.warning,
+                        section.name.uppercase(), style = MaterialTheme.typography.labelSmall, color = p.muted,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(start = 20.dp, top = 14.dp, bottom = 4.dp).semantics { heading() },
                     )
                 }
-                Icon(
-                    if (switching) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown, null,
-                    tint = p.muted,
-                )
             }
-            IconButton({ Engine.send("shareInvite") }) {
-                Icon(Icons.Filled.PersonAdd, tr("Invite friends", "Convidar amigos"), tint = p.accent)
-            }
-        }
-        AnimatedVisibility(
-            switching,
-            enter = expandVertically(tween(160)) + fadeIn(tween(160)),
-            exit = shrinkVertically(tween(120)) + fadeOut(tween(100)),
-        ) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp).padding(bottom = 8.dp)) {
-                for (o in others) {
-                    ServerChoice(Icons.Filled.Dns, o.name.ifEmpty { o.host }, "${o.username} · ${o.host}") { onSwitch(o) }
-                }
-                ServerChoice(Icons.Filled.SwapHoriz, tr("Another server", "Outro servidor"), null) { onSwitch(null) }
-            }
-        }
-        HorizontalDivider(color = p.border)
-        val sections = remember(s.channels, s.groups) {
-            val groups = s.groups.sortedBy { it.position }
-            buildList {
-                add(Section(null, null, s.channels.filter { c -> c.groupId == null || groups.none { g -> g.id == c.groupId } }.sortedBy { it.position }))
-                for (g in groups) add(Section(g.id, g.name, s.channels.filter { it.groupId == g.id }.sortedBy { it.position }))
-            }.filter { it.channels.isNotEmpty() }
-        }
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
-            for (section in sections) {
-                if (section.name != null) {
-                    // By id: two groups can have the same name, and a list refuses two of one key.
-                    item(key = "g${section.id}", contentType = "group") {
-                        Text(
-                            section.name.uppercase(), style = MaterialTheme.typography.labelSmall, color = p.muted,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 4.dp).semantics { heading() },
-                        )
-                    }
-                }
-                items(section.channels, key = { it.id }, contentType = { if (it.voice) "voice" else "text" }) { c ->
-                    if (c.voice) {
-                        VoiceChannelRow(c, s, voice, onVoice)
-                    } else {
-                        TextChannelRow(c, s, onText)
-                    }
+            items(section.channels, key = { it.id }, contentType = { if (it.voice) "voice" else "text" }) { c ->
+                if (c.voice) {
+                    VoiceChannelRow(c, s, voice, onRoom, onProfile)
+                } else {
+                    TextChannelRow(c, s, onText)
                 }
             }
         }
-        HorizontalDivider(color = p.border)
-        Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Avatar(s.me.name, s.me.avatarHash, size = 36.dp)
-            Spacer(Modifier.width(10.dp))
-            Column(Modifier.weight(1f)) {
-                Text(s.me.name, color = p.text, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("@${s.me.nickname}", color = p.muted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            IconButton(onSettings) { Icon(Icons.Filled.Settings, tr("Settings", "Configurações"), tint = p.muted) }
-        }
+        item(key = "end") { Spacer(Modifier.navigationBarsPadding()) }
     }
-}
-
-@Composable
-private fun ServerChoice(icon: ImageVector, title: String, detail: String?, onClick: () -> Unit) {
-    val p = LocalPalette.current
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 1.dp).clip(RoundedCornerShape(8.dp)).clickable(role = Role.Button, onClick = onClick)
-            .heightIn(min = 48.dp).padding(horizontal = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(icon, null, tint = p.accent, modifier = Modifier.size(22.dp))
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, color = p.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            detail?.let { Text(it, color = p.muted, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-        }
-    }
-}
-
-/** Whether two addresses are the same server, however they were typed (as the engine compares them). */
-private fun sameServer(a: String, b: String): Boolean {
-    fun norm(u: String) = u.trim().let { if ("://" in it) it else "http://$it" }.trimEnd('/')
-    return a.isNotBlank() && norm(a).equals(norm(b), ignoreCase = true)
 }
 
 @Composable
@@ -488,19 +446,19 @@ private fun TextChannelRow(c: Channel, s: SessionState, onText: (Channel) -> Uni
 }
 
 @Composable
-private fun VoiceChannelRow(c: Channel, s: SessionState, voice: State<VoiceState?>, onVoice: (Channel) -> Unit) {
+private fun VoiceChannelRow(c: Channel, s: SessionState, voice: State<VoiceState?>, onRoom: (Channel) -> Unit, onProfile: (Long) -> Unit) {
     val p = LocalPalette.current
     val v = voice.value
     val here = v?.channelId == c.id
     val roster = s.rosters[c.id].orEmpty()
-    val join = tr("Join voice", "Entrar na voz")
+    val look = tr("See the room", "Ver a sala")
     val speakingLabel = tr("speaking", "falando")
     val speakers = if (here) v.speaking else emptySet()
     Column {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 1.dp).clip(RoundedCornerShape(8.dp))
                 .background(if (here) p.raised else Color.Transparent)
-                .clickable(role = Role.Button, onClickLabel = join) { onVoice(c) }
+                .clickable(role = Role.Button, onClickLabel = look) { onRoom(c) }
                 .semantics { selected = here }
                 .heightIn(min = 46.dp).padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -514,7 +472,9 @@ private fun VoiceChannelRow(c: Channel, s: SessionState, voice: State<VoiceState
             val u = s.user(m.userId)
             val speaking = m.userId in speakers
             Row(
-                Modifier.fillMaxWidth().padding(start = 44.dp, end = 12.dp, top = 3.dp, bottom = 3.dp)
+                Modifier.fillMaxWidth().padding(start = 36.dp, end = 8.dp).clip(RoundedCornerShape(8.dp))
+                    .clickable(role = Role.Button, onClickLabel = tr("Open profile", "Abrir perfil")) { onProfile(m.userId) }
+                    .padding(horizontal = 8.dp, vertical = 5.dp)
                     .semantics(mergeDescendants = true) { if (speaking) stateDescription = speakingLabel },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -528,7 +488,7 @@ private fun VoiceChannelRow(c: Channel, s: SessionState, voice: State<VoiceState
 }
 
 @Composable
-private fun MemberMarks(m: Member) {
+fun MemberMarks(m: Member) {
     val p = LocalPalette.current
     if (m.deafened) {
         Icon(Icons.Filled.HeadsetOff, tr("Can't hear", "Não está ouvindo"), tint = p.danger, modifier = Modifier.size(16.dp))
@@ -601,7 +561,7 @@ private fun VoiceBar(v: VoiceState, onOpen: () -> Unit) {
 }
 
 @Composable
-private fun VoiceSheet(voice: State<VoiceState?>, s: SessionState) {
+private fun VoiceSheet(voice: State<VoiceState?>, s: SessionState, onProfile: (Long) -> Unit) {
     val p = LocalPalette.current
     val haptic = LocalHapticFeedback.current
     // The call may end under the sheet; its host closes the sheet a moment later.
@@ -632,7 +592,8 @@ private fun VoiceSheet(voice: State<VoiceState?>, s: SessionState) {
             val speaking = m.userId in v.speaking
             Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                 Row(
-                    Modifier.semantics(mergeDescendants = true) { if (speaking) stateDescription = speakingLabel },
+                    Modifier.clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button, onClickLabel = tr("Open profile", "Abrir perfil")) { onProfile(m.userId) }
+                        .semantics(mergeDescendants = true) { if (speaking) stateDescription = speakingLabel },
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Avatar(name, u?.avatarHash, size = 40.dp, speaking = speaking)

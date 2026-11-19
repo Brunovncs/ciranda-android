@@ -14,6 +14,10 @@ object Native {
     @JvmStatic
     external fun command(json: String)
 
+    /** The key secrets at rest are sealed with (`SealKey`); before `start`. */
+    @JvmStatic
+    external fun sealWith(key: ByteArray)
+
     /** Called from Rust's threads. */
     @JvmStatic
     fun onEvent(json: String) {

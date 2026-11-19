@@ -13,6 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
+pub mod private;
+
 /// Messages per page of history, as the server pages them.
 const PAGE: usize = 50;
 /// How many channels keep their history: the open one and those opened just before it.
@@ -210,11 +212,14 @@ pub struct Session {
     pub last_channel: Option<ChannelId>,
     /// Its socket put down while the app is away (`Session::park`).
     pub parked: bool,
+    /// The private conversations, and this account's key for them.
+    pub private: private::Private,
 }
 
 impl Session {
     pub fn new(api: Api, done: Done, handle: &Handle) -> Session {
         let me = done.user;
+        let private = private::Private::new(&api, &me);
         let mut s = Session {
             api,
             realtime: None,
@@ -242,6 +247,7 @@ impl Session {
             mentioned: HashMap::new(),
             last_channel: None,
             parked: false,
+            private,
         };
         s.connect(handle);
         s.refresh_lists(handle);
@@ -382,6 +388,7 @@ impl Session {
             "openChannel": self.open_channel,
             "maxFileBytes": self.server_info.as_ref().and_then(|i| i.max_file_bytes),
             "emojis": self.emojis,
+            "private": self.private_state(),
         })
     }
 
@@ -701,10 +708,15 @@ impl Engine {
                         self.mark_chat();
                     }
                 }
+                // Every time: a background socket hears no `keys:changed`, so a key changed meanwhile is
+                // learned this way.
+                let s = self.session.as_mut().expect("checked above");
+                s.start_private(&self.handle);
                 if was_down {
                     let s = self.session.as_mut().expect("checked above");
                     s.refresh_lists(&self.handle);
                     s.catch_up(&self.handle);
+                    s.dm_catch_up(&self.handle);
                     if let Some(c) = self.call.as_mut() {
                         c.reconnected(self.session.as_ref(), &self.handle);
                         self.mark_voice();
@@ -738,6 +750,9 @@ impl Engine {
     /// Whether the push changed anything drawn.
     fn on_push(&mut self, v: Value) -> bool {
         let kind = v.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+        if self.on_private_push(&kind, &v) {
+            return false;
+        }
         let parse = |key: &str| v.get(key).cloned().unwrap_or(Value::Null);
         let cues = self.voice_sounds();
         let Some(s) = self.session.as_mut() else {

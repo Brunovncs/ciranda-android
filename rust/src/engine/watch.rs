@@ -21,6 +21,8 @@ pub struct Watch {
     socket: u64,
     /// Display names by id, so a mention says who as the server shows it.
     names: HashMap<UserId, String>,
+    /// Your own id there, so your own private messages (from another device) tell nothing.
+    me: Option<UserId>,
 }
 
 impl Watch {
@@ -92,7 +94,7 @@ impl Engine {
         });
         let name = if s.name.is_empty() { s.host() } else { s.name.clone() };
         log::info!("listening for mentions on {}", s.url);
-        self.watching.list.push(Watch { url: s.url, username: s.username, name, realtime, socket, names: HashMap::new() });
+        self.watching.list.push(Watch { url: s.url, username: s.username, name, realtime, socket, names: HashMap::new(), me: None });
         // Whether it can, and who is who there. Offline now, the socket keeps trying on its own.
         self.spawn(async move { tokio::join!(api.health(), api.users()) }, move |e, (health, users)| {
             let Some(at) = e.watching.list.iter().position(|w| w.socket == socket) else { return };
@@ -106,7 +108,9 @@ impl Engine {
                 return;
             }
             if let Ok(users) = users {
-                e.watching.list[at].names = users.into_iter().map(|u| (u.id, u.name().to_string())).collect();
+                let w = &mut e.watching.list[at];
+                w.me = users.iter().find(|u| u.nickname.eq_ignore_ascii_case(&w.username)).map(|u| u.id);
+                w.names = users.into_iter().map(|u| (u.id, u.name().to_string())).collect();
             }
         });
     }
@@ -144,6 +148,36 @@ impl Engine {
                     author: &author,
                     message: &m,
                 });
+            }
+            // A private message: who sent it, never what it says (it is sealed, and a notification
+            // is no place for it).
+            realtime::Event::Push(v) if v.get("type").and_then(Value::as_str) == Some("dm:message") => {
+                let w = &self.watching.list[at];
+                let from = v.pointer("/message/userId").and_then(Value::as_i64);
+                let conversation = v.pointer("/message/conversationId").and_then(Value::as_i64).unwrap_or(-1);
+                let call = v.pointer("/message/kind").and_then(Value::as_str) == Some("call");
+                if from.is_none() || from == w.me || call {
+                    return;
+                }
+                let author = from.and_then(|id| w.names.get(&id).cloned()).unwrap_or_else(|| tr!("someone", "alguém").into());
+                let (url, username, server) = (w.url.clone(), w.username.clone(), w.name.clone());
+                // The server on screen, its own socket put down: its badge counts it.
+                if let Some(s) =
+                    self.session.as_mut().filter(|s| same_server(&s.api.base(), &url) && s.me.nickname.eq_ignore_ascii_case(&username))
+                    && let Some(dm) = s.private.dms.get_mut(&conversation)
+                {
+                    dm.info.unread += 1;
+                    self.mark();
+                }
+                self.send(json!({
+                    "type": "privateMessage",
+                    "server": url,
+                    "username": username,
+                    "serverName": server,
+                    "conversationId": conversation,
+                    "messageId": v.pointer("/message/id").and_then(Value::as_i64),
+                    "author": author,
+                }));
             }
             _ => {}
         }

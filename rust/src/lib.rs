@@ -11,6 +11,8 @@ pub mod core;
 
 pub mod media;
 
+#[path = "../../ciranda/client/src/dm.rs"]
+pub mod dm;
 #[path = "../../ciranda/client/src/emoji.rs"]
 pub mod emoji;
 #[path = "../../ciranda/client/src/markdown.rs"]

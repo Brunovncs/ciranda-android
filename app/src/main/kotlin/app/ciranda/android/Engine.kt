@@ -141,6 +141,57 @@ data class Settings(
     val language: String = "",
 )
 
+/** Whether this phone can take part in private conversations (`dm::KeyState`). */
+enum class KeyState {
+    Loading,
+    Ready,
+    /** The account has a key this phone doesn't: the recovery key opens it here. */
+    Locked,
+    Failed,
+    /** The server is older than private conversations. */
+    Unsupported,
+    ;
+
+    companion object {
+        fun parse(s: String) = when (s) {
+            "ready" -> Ready
+            "locked" -> Locked
+            "failed" -> Failed
+            "unsupported" -> Unsupported
+            else -> Loading
+        }
+    }
+}
+
+@Immutable
+data class Conversation(val id: Long, val peer: Long, val preview: String, val previewMine: Boolean, val lastAt: Long, val unread: Int)
+
+/** The private conversation on screen, and what stands between you and writing in it. */
+@Immutable
+data class OpenConversation(
+    val id: Long,
+    val peer: Long,
+    val peerHasKey: Boolean,
+    /** The other person's key changed, and the change is not accepted here. */
+    val keyChanged: Boolean,
+    val verified: Boolean,
+    val blocked: Boolean,
+    /** A message not sent because of that change. */
+    val held: String?,
+)
+
+@Immutable
+data class PrivateState(
+    val state: KeyState = KeyState.Loading,
+    val error: String? = null,
+    val needsBackup: Boolean = false,
+    val hasRecovery: Boolean = false,
+    val conversations: List<Conversation> = emptyList(),
+    val blocked: Set<Long> = emptySet(),
+    val unread: Int = 0,
+    val open: OpenConversation? = null,
+)
+
 @Immutable
 data class SessionState(
     val url: String,
@@ -158,6 +209,7 @@ data class SessionState(
     val openChannel: Long?,
     val maxFileBytes: Long?,
     val emojis: List<Emoji>,
+    val private: PrivateState = PrivateState(),
 ) {
     fun user(id: Long?): User? = id?.let { users[it] }
     fun channel(id: Long?): Channel? = channels.firstOrNull { it.id == id }
@@ -245,6 +297,13 @@ data class Message(
     val reactions: List<Reaction>,
     val createdAt: Long,
     val mentionsMe: Boolean,
+    /** A private conversation's call, as one line. */
+    val call: String? = null,
+    /** It didn't open here, or was refused for not being where it was sent. */
+    val unreadable: Boolean = false,
+    val outOfPlace: Boolean = false,
+    /** Sent with a key of theirs this phone hasn't accepted. */
+    val unconfirmed: Boolean = false,
 )
 
 @Immutable
@@ -255,6 +314,8 @@ data class ChatState(
     val moreBefore: Boolean,
     val loadingOlder: Boolean,
     val error: String?,
+    /** A private conversation's, whose id is in `channelId`. */
+    val private: Boolean = false,
 )
 
 sealed interface Event {
@@ -276,12 +337,30 @@ sealed interface Event {
     data class File(val path: String, val name: String) : Event
     data class Uploading(val on: Boolean) : Event
     /** A message or a file's caption that did not go: its text, back for the composer. */
-    data class SendFailed(val channelId: Long, val body: String) : Event
+    data class SendFailed(val channelId: Long, val body: String, val private: Boolean = false) : Event
     data class InviteLink(val link: String, val name: String) : Event
 
     /** Signed in with the form (not a kept sign-in): when the lock is offered. */
     data object SignedIn : Event
     data class PasswordChanged(val ok: Boolean, val error: String?) : Event
+
+    /** A private message, for a notification: who sent it, never what it says. */
+    data class PrivateMessage(
+        val server: String,
+        val username: String,
+        val serverName: String,
+        val conversationId: Long,
+        val messageId: Long,
+        val author: String,
+    ) : Event
+
+    /** The recovery key typed opened this account's key here, or didn't. */
+    data class Unlocked(val ok: Boolean) : Event
+
+    /** The recovery key, to show; null once it was put somewhere safe and forgotten here. */
+    data class RecoveryKey(val key: String?) : Event
+
+    data class SafetyNumber(val userId: Long, val number: String?, val verified: Boolean) : Event
 }
 
 /** The app's state as the Rust engine last said it, and its one-off events. */
@@ -299,6 +378,8 @@ object Engine {
     val voice: StateFlow<VoiceState?> = _voice
     private val _chat = MutableStateFlow<ChatState?>(null)
     val chat: StateFlow<ChatState?> = _chat
+    private val _privateChat = MutableStateFlow<ChatState?>(null)
+    val privateChat: StateFlow<ChatState?> = _privateChat
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 256, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     val events: SharedFlow<Event> = _events
 
@@ -323,6 +404,16 @@ object Engine {
             }
             "voice" -> _voice.value = o.optJSONObject("voice")?.let(::parseVoice)
             "chat" -> _chat.value = parseChat(o, _chat.value)
+            "dmChat" -> _privateChat.value = if (o.isNull("conversationId")) null else parseChat(o, _privateChat.value, private = true)
+            "privateMessage" -> _events.tryEmit(
+                Event.PrivateMessage(
+                    o.optString("server"), o.optString("username"), o.optString("serverName"), o.optLong("conversationId"),
+                    o.optLong("messageId"), o.optString("author"),
+                ),
+            )
+            "unlocked" -> _events.tryEmit(Event.Unlocked(o.optBoolean("ok")))
+            "recoveryKey" -> _events.tryEmit(Event.RecoveryKey(o.str("key")))
+            "safetyNumber" -> _events.tryEmit(Event.SafetyNumber(o.optLong("userId"), o.str("number"), o.optBoolean("verified")))
             "toast" -> _events.tryEmit(Event.Toast(o.optString("text")))
             "picture" -> _events.tryEmit(Event.Picture(o.optString("hash"), o.str("path")))
             "needsPassword" -> _events.tryEmit(Event.NeedsPassword(o.optLong("channelId"), o.optBoolean("wrong")))
@@ -331,7 +422,7 @@ object Engine {
             "signedIn" -> _events.tryEmit(Event.SignedIn)
             "passwordChanged" -> _events.tryEmit(Event.PasswordChanged(o.optBoolean("ok"), o.str("error")))
             "inviteLink" -> _events.tryEmit(Event.InviteLink(o.optString("link"), o.optString("name")))
-            "sendFailed" -> _events.tryEmit(Event.SendFailed(o.optLong("channelId"), o.optString("body")))
+            "sendFailed" -> _events.tryEmit(Event.SendFailed(o.optLong("channelId"), o.optString("body"), o.optBoolean("private")))
             "uploading" -> _events.tryEmit(Event.Uploading(o.optBoolean("on")))
             "mention" -> _events.tryEmit(
                 Event.Mention(
@@ -430,6 +521,7 @@ private fun parseSession(o: JSONObject): SessionState {
         openChannel = o.long("openChannel"),
         maxFileBytes = o.long("maxFileBytes"),
         emojis = emojis,
+        private = o.optJSONObject("private")?.let(::parsePrivate) ?: PrivateState(),
     )
 }
 
@@ -496,6 +588,33 @@ private fun parseMessage(o: JSONObject): Message {
         reactions = reactions,
         createdAt = o.optLong("createdAt"),
         mentionsMe = false,
+        call = o.optJSONObject("private")?.str("call"),
+        unreadable = o.optJSONObject("private")?.optBoolean("unreadable") == true,
+        outOfPlace = o.optJSONObject("private")?.optBoolean("outOfPlace") == true,
+        unconfirmed = o.optJSONObject("private")?.optBoolean("unconfirmed") == true,
+    )
+}
+
+private fun parsePrivate(o: JSONObject): PrivateState {
+    val list = o.optJSONArray("conversations")
+    val open = o.optJSONObject("open")
+    return PrivateState(
+        state = KeyState.parse(o.optString("state")),
+        error = o.str("error"),
+        needsBackup = o.optBoolean("needsBackup"),
+        hasRecovery = o.optBoolean("hasRecovery"),
+        conversations = list.list { i ->
+            val c = list!!.getJSONObject(i)
+            Conversation(c.optLong("id"), c.optLong("peer"), c.optString("preview"), c.optBoolean("previewMine"), c.optLong("lastAt"), c.optInt("unread"))
+        },
+        blocked = o.optJSONArray("blocked").longs().toSet(),
+        unread = o.optInt("unread"),
+        open = open?.let {
+            OpenConversation(
+                it.optLong("id"), it.optLong("peer"), it.optBoolean("peerHasKey"), it.optBoolean("keyChanged"),
+                it.optBoolean("verified"), it.optBoolean("blocked"), it.str("held"),
+            )
+        },
     )
 }
 
@@ -503,9 +622,9 @@ private fun parseMessage(o: JSONObject): Message {
  * A message that did not change since the last time is that same object, not an equal new one:
  * the list then costs one identity check per row to be told nothing happened to it.
  */
-private fun parseChat(o: JSONObject, before: ChatState?): ChatState {
+private fun parseChat(o: JSONObject, before: ChatState?, private: Boolean = false): ChatState {
     val a = o.optJSONArray("messages")
-    val channelId = o.optLong("channelId")
+    val channelId = if (private) o.optLong("conversationId") else o.optLong("channelId")
     val known = if (before != null && before.channelId == channelId) before.messages.associateBy { it.id } else emptyMap()
     return ChatState(
         channelId = channelId,
@@ -517,5 +636,6 @@ private fun parseChat(o: JSONObject, before: ChatState?): ChatState {
         moreBefore = o.optBoolean("moreBefore"),
         loadingOlder = o.optBoolean("loadingOlder"),
         error = o.str("error"),
+        private = private,
     )
 }
