@@ -98,7 +98,20 @@ val cargoBuild = tasks.register<Exec>("cargoBuild") {
     }
 }
 
-tasks.named("preBuild") { dependsOn(cargoBuild) }
+// Every version has its "What's new" (News.kt): the newest entry is this version, or nothing builds.
+val checkNews = tasks.register("checkNews") {
+    val news = project.file("src/main/kotlin/app/ciranda/android/News.kt")
+    inputs.file(news)
+    inputs.property("version", crateVersion)
+    doLast {
+        val newest = Regex("""Entry\(\s*"([^"]+)"""").find(news.readText())?.groupValues?.get(1)
+        if (newest != crateVersion) {
+            throw GradleException("News.kt: the newest entry is $newest; add one for $crateVersion at the top of ENTRIES")
+        }
+    }
+}
+
+tasks.named("preBuild") { dependsOn(cargoBuild, checkNews) }
 
 dependencies {
     implementation(files("libs/libwebrtc.jar"))

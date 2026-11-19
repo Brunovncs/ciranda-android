@@ -54,6 +54,7 @@ import app.ciranda.android.AppState
 import app.ciranda.android.Engine
 import app.ciranda.android.Event
 import app.ciranda.android.MainActivity
+import app.ciranda.android.News
 import app.ciranda.android.Phase
 import app.ciranda.android.Prefs
 import app.ciranda.android.R
@@ -106,7 +107,21 @@ fun Root(activity: MainActivity) {
             dismissButton = { TextButton({ activity.confirmLeave.value = null }) { Text(tr("Stay", "Ficar")) } },
         )
     }
-    if (offerLock && !shielded) {
+    // "What's new", once per update: decided at start, shown once the app is past the lock and
+    // the kept sign-in, so it never sits over the spinner or behind the lock screen.
+    var news by remember { mutableStateOf(News.pending(Prefs.newsSeen.value, Prefs.updatedInstall)) }
+    LaunchedEffect(Unit) {
+        // A new install, or nothing new since the last shown: counting starts from this version.
+        if (news == null) Prefs.setNewsSeen(News.current)
+    }
+    val settled = known && !shielded && routeOf(state) != Route.Connecting
+    news?.takeIf { settled }?.let { (since, entries) ->
+        NewsDialog(entries, since) {
+            news = null
+            Prefs.setNewsSeen(News.current)
+        }
+    }
+    if (offerLock && !shielded && news == null) {
         val done = {
             offerLock = false
             Prefs.setLockOffered()

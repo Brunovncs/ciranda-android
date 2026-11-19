@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.BatteryAlert
 import androidx.compose.material.icons.filled.Key
@@ -67,6 +68,7 @@ import app.ciranda.android.AppLock
 import app.ciranda.android.AppState
 import app.ciranda.android.Engine
 import app.ciranda.android.MainActivity
+import app.ciranda.android.News
 import app.ciranda.android.Prefs
 import app.ciranda.android.Updater
 import kotlinx.coroutines.launch
@@ -76,6 +78,8 @@ fun SettingsScreen(activity: MainActivity, state: AppState, onClose: () -> Unit)
     val p = LocalPalette.current
     val st = state.settings
     var changingPassword by remember { mutableStateOf(false) }
+    var showNews by remember { mutableStateOf(false) }
+    if (showNews) NewsDialog(News.upTo(), null) { showNews = false }
     Dialog(onClose, DialogProperties(usePlatformDefaultWidth = false)) {
         Column(Modifier.fillMaxSize().background(p.bg)) {
             // The same bar as the chat's: the surface runs up under the status bar, with a line below.
@@ -99,6 +103,7 @@ fun SettingsScreen(activity: MainActivity, state: AppState, onClose: () -> Unit)
                     tr("At start and every few hours", "Ao abrir e a cada algumas horas"),
                     st.checkUpdates,
                 ) { Engine.send("settings", "checkUpdates" to it) }
+                Action(Icons.Filled.AutoAwesome, tr("What's new", "Novidades")) { showNews = true }
 
                 Section(tr("Voice", "Voz"))
                 Toggle(

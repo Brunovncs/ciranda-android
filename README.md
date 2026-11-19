@@ -18,7 +18,7 @@ Daí em diante, Ciranda avisa quando sai uma versão nova e se atualiza sozinha:
 - Bloqueio com digital, rosto ou o PIN do celular (oferecido depois de entrar; em Configurações → Segurança, com quanto tempo fora antes de pedir de novo). Voltar de algo que o próprio app abriu (escolher arquivo, compartilhar, PIN) não pede de novo.
 - Trocar a senha da conta em Configurações → Conta. Esqueceu a senha? Quem cuida do servidor define uma nova no painel.
 - Notificação quando alguém te menciona (`@você`, `@everyone`, `@todos`, `@all`, `@here` ou uma resposta), em qualquer servidor em que você entrou, mesmo com o app fechado. Uma conexão leve fica aberta para isso, sem te mostrar online; o Android exige um aviso fixo, silencioso, que dá para esconder. Precisa de servidor com a versão que avisa menções em segundo plano (`mentions` em `/api/health`).
-- Atualização pelo próprio app, como no desktop.
+- Atualização pelo próprio app, como no desktop. Depois de atualizar, uma janela mostra o que mudou em cada versão que você pulou; o histórico fica em Configurações → Atualizações → Novidades. As notas ficam em `app/src/main/kotlin/app/ciranda/android/News.kt`, e o build falha se a versão de `rust/Cargo.toml` não tiver a sua.
 
 Ainda não tem: conversas privadas e chamadas privadas, assistir telas e câmeras, compartilhar a tela ou a câmera, Cirandinha e soundpad.
 
